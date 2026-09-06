@@ -1,0 +1,11 @@
+{
+  "id": "lenient-open-document",
+  "title": "宽容打开：无 manifest 时 document.md 优先作为入口渲染",
+  "kind": "render",
+  "lenient": true,
+  "expect": {
+    "htmlContains": [
+      "主文档"
+    ]
+  }
+}

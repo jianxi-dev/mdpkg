@@ -22,6 +22,7 @@ interface Case {
   input?: string; // 输入目录，默认 input/
   entry?: string;
   args?: Record<string, unknown>;
+  lenient?: boolean; // 宽容打开：直接对无 manifest.json 的文件集操作（lenient-open）
   tamper?: { resource?: number; sha256?: string; size?: number }; // 篡改 manifest 以测完整性校验
   expect: {
     errorCode?: string | null;
@@ -98,8 +99,11 @@ async function runCase(c: Case, base: string): Promise<void> {
   }
 
   if (c.kind === 'validate') {
-    const pkg = withManifest();
+    // lenient：直接对无 manifest 的文件集校验（严格性保持，应报 E102）；否则注入 manifest
+    const pkg = c.lenient ? files : withManifest();
     if (c.tamper) {
+      // lenient+tamper 互斥：tamper 需要 manifest.json，缺失时下方 pkg.get()! 会 TypeError（潜伏）
+      if (!pkg.has('manifest.json')) throw new Error('fixture 错误: lenient+tamper 互斥（tamper 需要 manifest）');
       const idx = c.tamper.resource ?? 0;
       const m = JSON.parse(new TextDecoder().decode(pkg.get('manifest.json')!));
       if (c.tamper.sha256) m.resources[idx].sha256 = c.tamper.sha256;
@@ -117,7 +121,18 @@ async function runCase(c: Case, base: string): Promise<void> {
   }
 
   if (c.kind === 'render') {
-    const html = render(withManifest(), c.args ?? {}).html;
+    // lenient：直接对无 manifest 的文件集渲染（入口推断）；推断失败（如 E303）在此捕获
+    const input = c.lenient ? files : withManifest();
+    let html: string;
+    try {
+      html = render(input, c.args ?? {}).html;
+    } catch (e) {
+      if (c.expect.errorCode && e instanceof MdeError) {
+        assert.equal(e.code, c.expect.errorCode, `${c.id}: 期望 ${c.expect.errorCode}`);
+        return;
+      }
+      throw e;
+    }
     for (const s of c.expect.htmlContains ?? []) assert.ok(html.includes(s), `${c.id}: HTML 应包含 ${JSON.stringify(s)}`);
     for (const s of c.expect.htmlNotContains ?? []) assert.ok(!html.includes(s), `${c.id}: HTML 不应包含 ${JSON.stringify(s)}`);
     return;

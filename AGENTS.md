@@ -59,15 +59,18 @@ mdpkg/
 
 ```bash
 # 实现（packages/mdpkg/）
-cd packages/mdpkg && npm test                      # node --test test/*.test.ts（102 用例）
+cd packages/mdpkg && npm test                      # node --test test/*.test.ts（136 用例）
 npm run build:web                                  # 构建浏览器库（ESM + IIFE bundle）
 node src/cli.ts pack <dir> -o out.mdpkg            # 打包
 node src/cli.ts list out.mdpkg                     # 列条目（只读 header，不解压）
 node src/cli.ts unpack out.mdpkg -o dir            # 解包
 node src/cli.ts validate out.mdpkg                 # 校验（Schema + size/sha256 + 引用闭包）
 node src/cli.ts render out.mdpkg -o out.html       # 渲染（默认 inline 单文件；>50MB 自动降级 --dir）
+node src/cli.ts render out.mdpkg --format docx -o out.docx  # 渲染为 OOXML 文档（资源嵌入）
 node src/cli.ts export --raw out.mdpkg -o dir      # 导出：结构保持、文本未改
 node src/cli.ts export --expanded out.mdpkg -o dir # 导出：include 已展开、相对路径已按包根重写
+node src/cli.ts export --md out.mdpkg -o out.md    # 导出：展开后 Markdown 单文件（include 内联、路径重写、符号保持源文本）
+node src/cli.ts export --zip out.mdpkg -o out.zip  # 导出：标准 zip 交付物（展开后 Markdown + 资源 + README）
 node src/cli.ts diff a.mdpkg b.mdpkg                 # 对比两包（解包后 diff -ruN）
 unzip -l out.mdpkg                                 # 互操作验证：通用 ZIP 工具可读
 
@@ -91,7 +94,11 @@ git status                 # 工作区状态（PLAN_MERGED.md / spec/ / packages
 - 已完成 M5：conformance fixtures **43 个用例**（`spec/fixtures/<id>/{case.json,input/}`，驱动 `packages/mdpkg/test/fixtures.test.ts`）。
 - 已完成 M6：规范与实现逐条对齐，补齐 5 处「规范承诺但实现缺失」（E701/E702 版本协商、`--referenced-only`、`export --raw/--expanded`、`mdpkg diff`），`--fetch` 显式标注为 v1 不提供。
 - **M0–M6 全部完成**（M7 为延后项）。
-- 已完成 zip-core 跨端核心层 + mdpkg-web 浏览器库（`openMdpkg` / `packMdpkg` / `readEntrySource`）+ repack 往返能力 + 限额与边界回归测试。**全量测试 102 用例：100 通过 + 2 跳过**。
+- 已完成 zip-core 跨端核心层 + mdpkg-web 浏览器库（`openMdpkg` / `packMdpkg` / `readEntrySource`）+ repack 往返能力 + 限额与边界回归测试。**全量测试 136 用例**。
+- 已完成 lenient-open（宽容打开普通 ZIP 文档）上线：`render` / `export` / `openMdpkg` 接受无 manifest 的 zip，推断入口 + 标注 `unverified` / `entry`；unpack/list 静默截断根治（分块 push 替代 fflate 递归限制，issue #1 关闭）。
+- 已完成 docx 导出（`render --format docx`）+ zip 交付物导出（`export --zip`）：OOXML 文档含嵌入资源 / 标准 zip 含展开后 Markdown + 资源 + README。
+- 导出格式矩阵定案：md（`export --md` / `toMarkdown`）/ mdpkg（`pack` / `packMdpkg`）/ html（`render` / `toHtml`）/ zip（`export --zip` / `toZip`）/ docx（`render --format docx` / `toDocx`）；pdf 用浏览器打印兜底（`window.print()`），不做导出能力。
+- 已完成浏览器端 `openFiles` 统一入口：任意文件 Map 的 lenient 渲染（入口推断 + 未校验标注），供目录/多条目拖入场景使用；`openMarkdown` 内部委托它。demo/浏览器库支持拖入 .md / .mdpkg / .zip / 文件夹（文件夹含同级附件，图片内联显示）。
 - 已知缺口：`--fetch` 未提供（规范已标注为参考实现 v1 不提供）；M7（VS Code 插件）在采用可行性验证前不启动。
 - 定位：先自用后标准化，3 个月止损判据；VS Code 插件（M7）在采用可行性验证前不启动。
 - 2026-08-31：MDE → mdpkg 统一改名完成（错误码 MDPKG-EXXX，manifest 标识字段 format:"mdpkg"），三仓库拆分：mdpkg（本仓库，格式+CLI）/ md-bundle（网页工具占位，新建）/ clairis（桌面旗舰）

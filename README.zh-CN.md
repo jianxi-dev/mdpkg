@@ -62,6 +62,16 @@ node src/cli.ts render demo.mdpkg -o demo.html        # 打开 demo.html 即可�
 | `export --expanded <pkg> -o dir` | include 已展开、相对路径已按包根重写（可被任何 MD 工具打开）   |
 | `diff a.mdpkg b.mdpkg`           | 解包双方后 `diff -ruN`                                         |
 
+## 打开
+
+`render`、`export` 与浏览器端 `openMdpkg` 除 `.mdpkg` 外同样接受**普通 ZIP**（目录树 + Markdown，无 `manifest.json`）。`.zip` 与 `.mdpkg` 扩展名同等对待。
+
+无 `manifest.json` 时，入口按以下优先级推断：`document.md`（任意目录深度，取最浅）> `README.md` > `README.zh-CN.md` > 其余 `.md` 按字典序首个。隐藏路径（以 `.` 开头）排除。无任何 `.md` 时报 `MDPKG-E303` 拒绝打开。
+
+宽容打开的包会标注**未校验来源（缺少 manifest.json）**：CLI 在 stderr 打印提示，浏览器 API 返回 `unverified: true` 与 `entry`（实际采用的推断入口）。注意与 `degraded`（资源 > 50 MB 的体积降级）区分——消费方接入宽容打开时应处理新增的 `unverified` 与 `entry` 字段。`demo.html` 查看器会对该类包显示「未校验」徽标。
+
+`validate` 对无 manifest 的包仍报 `MDPKG-E102`；宽容打开不提供完整性校验（无声明可校验）。对宽容打开的包重新 `pack` 输出仍是规范 mdpkg。
+
 ## 浏览器库
 
 `packages/mdpkg/web/` 提供 `mdpkg-web` 浏览器端 ESM/IIFE bundle：`openMdpkg` 读包、`packMdpkg` 重打包（与 CLI `pack` 逐字节一致）、`readEntrySource` 读单个条目。`demo.html` 为演示页。构建命令：`npm run build:web`。
@@ -80,7 +90,7 @@ node src/cli.ts render demo.mdpkg -o demo.html        # 打开 demo.html 即可�
 
 ```bash
 cd packages/mdpkg && node --test test/*.test.ts
-# 102 个用例：100 通过 + 2 跳过
+# 136 个用例
 ```
 
 fixture 是与实现无关的数据（`case.json` + `input/`），任何语言的实现跑通同一批用例即视为合规。

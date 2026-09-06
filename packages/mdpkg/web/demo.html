@@ -38,22 +38,47 @@ ul.warnings { color: #9a6700; }
 #errbox { display: none; background: #ffebe9; border: 1px solid #ff818266; color: #cf222e; border-radius: 8px; padding: 1rem 1.25rem; margin-top: 1rem; font-size: .9rem; white-space: pre-wrap; }
 #meta { font-size: .82rem; color: #57606a; margin-top: .8rem; line-height: 1.6; }
 #meta code { background: #f6f8fa; padding: .1em .35em; border-radius: 4px; }
+/* 导出栏（组 3）：卡片风格同 #result 内卡片；按钮为 GitHub 风次要按钮，色板沿用全局 */
+#exportbar { margin-bottom: 1rem; }
+#exportbar h2 { margin-bottom: .5rem; }
+#exportbar .barhint { margin: 0 0 .7rem; color: #57606a; font-size: .82rem; line-height: 1.5; }
+#exportbar .bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+#exportbar .expbtn {
+  appearance: none; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa;
+  color: #1f2328; font-size: .85rem; font-weight: 500; padding: .4rem .9rem; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+#exportbar .expbtn:hover { background: #f3f4f6; border-color: #0969da; }
+#exportbar .expbtn:active { background: #eceef0; }
+#exportbar .expbtn.print { border-color: #0969da; color: #0969da; background: #fff; }
+#exportbar .expbtn.print:hover { background: #f0f6ff; }
 </style>
 </head>
 <body>
 <header>
   <h1>mdpkg 网页打开器</h1>
-  <p>拖入 .mdpkg 文件 → 解包 + 校验 + 渲染。全部在浏览器本地完成，不上传。</p>
+  <p>拖入 .md / .mdpkg / .zip / 文件夹 → 解包 + 校验 + 渲染。全部在浏览器本地完成，不上传。</p>
 </header>
 <main>
   <div id="drop">
-    <strong>拖入 .mdpkg 文件，或点击选择</strong>
+    <strong>拖入 .md / .mdpkg / .zip / 文件夹，或点击选择</strong>
     <span>也可用下方按钮选择文件</span>
-    <input type="file" accept=".mdpkg,.zip" id="file" hidden>
+    <input type="file" accept=".md,.markdown,.mdpkg,.zip" id="file" hidden multiple>
   </div>
   <div id="status"></div>
   <div id="errbox"></div>
   <div id="panel">
+    <div class="card" id="exportbar">
+      <h2>导出</h2>
+      <p class="barhint">本地生成、不上传。md = 展开后单文件（include 已内联）· mdpkg = 重新打包分享 · html = 与预览一致 · zip = 普通 zip（资源随行）。PDF 请用「打印 / 另存为 PDF」。</p>
+      <div class="bar">
+        <button type="button" class="expbtn" data-kind="md">导出 .md</button>
+        <button type="button" class="expbtn" data-kind="mdpkg">导出 .mdpkg</button>
+        <button type="button" class="expbtn" data-kind="html">导出 .html</button>
+        <button type="button" class="expbtn" data-kind="zip">导出 .zip</button>
+        <button type="button" class="expbtn print" id="btnprint">打印 / 另存为 PDF</button>
+      </div>
+    </div>
     <div id="result">
       <div>
         <div class="card">
@@ -80,44 +105,258 @@ const fileInput = document.getElementById('file');
 const statusEl = document.getElementById('status');
 const panel = document.getElementById('panel');
 const errbox = document.getElementById('errbox');
+let currentR = null;  // 最近一次成功打开的结果（导出栏闭包数据源；showResult 注入 / showError 清空）
+
+// ===== 收集上限常量（D5）：与解包防护同精神——浏览器内存安全是硬约束（data URI 膨胀 ~33%）=====
+const MAX_ENTRIES = 1000;                    // 条目计数上限（含目录）
+const MAX_DEPTH = 8;                         // 递归深度上限（顶层拖入为第 1 层）
+const MAX_FILE_BYTES = 50 * 1024 * 1024;     // 单文件上限 50 MB
+const MAX_TOTAL_BYTES = 200 * 1024 * 1024;   // 总字节上限 200 MB
+
+// 兼容性检测（D6）：目录条目 API 是否可用——Chrome / Edge / Safari 支持，Firefox 不支持
+const ENTRY_API = typeof globalThis.FileSystemEntry !== 'undefined' ||
+  (typeof DataTransferItem !== 'undefined' &&
+   (typeof DataTransferItem.prototype.webkitGetAsEntry === 'function' ||
+    typeof DataTransferItem.prototype.getAsEntry === 'function'));
 
 drop.addEventListener('click', () => fileInput.click());
 drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
-drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('drag'); openFile(e.dataTransfer.files[0]); });
-fileInput.addEventListener('change', () => openFile(fileInput.files[0]));
 
+// drop 处理器（D4）：同步快照 dataTransfer.items → 异步收集 → 分派。
+// 关键：DataTransfer 条目在 handler 返回后失效，必须在此同步转为 entry/File 引用。
+drop.addEventListener('drop', (e) => {
+  e.preventDefault();
+  drop.classList.remove('drag');
+  const items = e.dataTransfer ? e.dataTransfer.items : null;
+  const snapshot = [];
+  if (items && items.length > 0) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      // 目录条目 API：webkitGetAsEntry（Safari 同；新版 Chrome 亦支持 getAsEntry）
+      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : (item.getAsEntry ? item.getAsEntry() : null);
+      if (entry) {
+        snapshot.push({ entry, file: null, name: entry.name, kind: entry.isDirectory ? 'directory' : 'file' });
+      } else {
+        // 无条目 API 或条目为 null：回退 getAsFile()
+        const file = item.getAsFile ? item.getAsFile() : null;
+        if (file) snapshot.push({ entry: null, file, name: file.name, kind: 'file' });
+      }
+    }
+  } else if (e.dataTransfer && e.dataTransfer.files) {
+    // 兜底：items 为空时回退 files（部分浏览器/场景）
+    for (let i = 0; i < e.dataTransfer.files.length; i++) {
+      const f = e.dataTransfer.files[i];
+      snapshot.push({ entry: null, file: f, name: f.name, kind: 'file' });
+    }
+  }
+  // 兼容性（D6）：无目录条目 API 的浏览器（Firefox）——目录/多条目提示，单文件路径不受影响
+  if (!ENTRY_API && snapshot.length !== 1) {
+    showError(new Error('目录拖入请使用 Chrome / Edge / Safari（单文件拖入不受影响）'));
+    return;
+  }
+  openSnapshot(snapshot);
+});
+
+// change 处理器（2.6）：单文件走原分派；多选文件合并 Map → openFiles（与拖拽多条目一致）
+fileInput.addEventListener('change', () => {
+  const files = fileInput.files;
+  if (!files || files.length === 0) return;
+  if (files.length === 1) { openFile(files[0]); return; }
+  const snapshot = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    snapshot.push({ entry: null, file: f, name: f.name, kind: 'file' });
+  }
+  openSnapshot(snapshot);
+});
+
+/**
+ * 收集快照条目为包 Map（D4/D5）：
+ * - 目录条目 createReader().readEntries() 循环读取（浏览器分批返回 ≤100 条，循环到空数组）
+ * - 文件条目 file() → arrayBuffer() → Uint8Array
+ * - 路径键 = 顶层拖入名 + 目录内相对路径（/ 连接）；隐藏路径段（任一段以 . 开头）跳过
+ * - 超限（条目/深度/单文件/总量）→ 停止收集并返回错误文本（不抛未捕获异常）
+ * - 单条目读失败（权限/损坏）→ 跳过并汇总到 warnings，不中断整体
+ * @returns {Promise<{files: Map<string, Uint8Array>, warnings: string[], error: string|null}>}
+ */
+async function collectEntries(snapshot) {
+  const files = new Map();
+  const warnings = [];
+  let count = 0;      // 已处理条目计数（含目录）
+  let totalBytes = 0; // 已收集总字节
+  let error = null;
+
+  // 超限中止：记录错误并停止后续收集
+  const abort = (msg) => { if (!error) error = msg; };
+
+  // 进度文本：收集期间维护「正在读取 N 个文件…」
+  const progress = () => { statusEl.textContent = `正在读取 ${files.size} 个文件…`; };
+
+  // readEntries 每次最多返回 100 条，必须循环调用直到返回空数组
+  async function readAllEntries(reader) {
+    const out = [];
+    for (;;) {
+      const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+      if (!batch || batch.length === 0) return out;
+      out.push(...batch);
+    }
+  }
+
+  // 递归读取目录（depth：该目录所在层级，顶层拖入目录为第 1 层）
+  async function readDir(dirEntry, prefix, depth) {
+    if (error) return;
+    if (depth > MAX_DEPTH) { abort(`收集超过上限：目录层级超过上限（≤ ${MAX_DEPTH} 层）`); return; }
+    let entries;
+    try {
+      entries = await readAllEntries(dirEntry.createReader());
+    } catch (e) {
+      warnings.push(`无法读取目录 ${prefix}：${e && e.message ? e.message : e}`);
+      return;
+    }
+    for (const child of entries) {
+      if (error) return;
+      if (child.name.startsWith('.')) continue; // 隐藏路径段跳过（.git/、.DS_Store 等）
+      if (child.isDirectory) {
+        count++;
+        if (count > MAX_ENTRIES) { abort(`收集超过上限：条目数超过上限（≤ ${MAX_ENTRIES}）`); return; }
+        await readDir(child, prefix + child.name + '/', depth + 1);
+      } else if (child.isFile) {
+        count++;
+        if (count > MAX_ENTRIES) { abort(`收集超过上限：条目数超过上限（≤ ${MAX_ENTRIES}）`); return; }
+        await readFile(child, prefix + child.name);
+      }
+    }
+  }
+
+  // 读取单个文件字节（FileEntry 走 file() 回调；File 对象直接 arrayBuffer()）
+  async function readFile(src, path) {
+    if (error) return;
+    let file;
+    try {
+      file = src instanceof File ? src : await new Promise((resolve, reject) => src.file(resolve, reject));
+    } catch (e) {
+      warnings.push(`无法读取 ${path}：${e && e.message ? e.message : e}`);
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) { abort(`收集超过上限：单文件超过上限（≤ ${MAX_FILE_BYTES / 1048576} MB）：${path}`); return; }
+    if (totalBytes + file.size > MAX_TOTAL_BYTES) { abort(`收集超过上限：总字节超过上限（≤ ${MAX_TOTAL_BYTES / 1048576} MB）`); return; }
+    let buf;
+    try {
+      buf = new Uint8Array(await file.arrayBuffer());
+    } catch (e) {
+      warnings.push(`无法读取 ${path}：${e && e.message ? e.message : e}`);
+      return;
+    }
+    files.set(path, buf);
+    totalBytes += buf.length;
+    progress();
+  }
+
+  // 顶层条目：目录 → 递归；文件 → 读字节
+  for (const item of snapshot) {
+    if (error) break;
+    if (item.name.startsWith('.')) continue; // 隐藏顶层条目跳过
+    count++;
+    if (count > MAX_ENTRIES) { abort(`收集超过上限：条目数超过上限（≤ ${MAX_ENTRIES}）`); break; }
+    if (item.kind === 'directory' && item.entry) {
+      await readDir(item.entry, item.name + '/', 1);
+    } else if (item.entry) {
+      await readFile(item.entry, item.name);
+    } else if (item.file) {
+      await readFile(item.file, item.name);
+    }
+  }
+
+  return { files, warnings, error };
+}
+
+/**
+ * 分派（D4）：按输入形态选择打开路径
+ * - 单文件 .mdpkg/.zip → openMdpkg（既有路径）
+ * - 单文件 .md/.markdown → openMarkdown（既有路径）
+ * - 单文件其它扩展名 → 友好提示（与既有行为一致）
+ * - 含目录条目或 ≥2 个已收集条目 → 合并 Map → openFiles（include 缺省展开；无 .md 时 E303 经 OpenResult.error 透传）
+ */
+function dispatch(snapshot, files) {
+  // 顶层条目是否已收集（目录：存在 name/ 前缀键；文件：存在 name 键）——隐藏/失败条目不参与分派
+  const collected = (s) => s.kind === 'directory'
+    ? [...files.keys()].some((k) => k.startsWith(s.name + '/'))
+    : files.has(s.name);
+  const top = snapshot.filter(collected);
+  if (top.length === 1 && top[0].kind === 'file') {
+    const name = top[0].name;
+    const lower = name.toLowerCase();
+    const buf = files.get(name);
+    if (lower.endsWith('.md') || lower.endsWith('.markdown')) return MdpkgWeb.openMarkdown(name, buf);
+    if (lower.endsWith('.mdpkg') || lower.endsWith('.zip')) return MdpkgWeb.openMdpkg(buf);
+    return Promise.reject(new Error('仅支持直接打开 .md / .mdpkg / .zip 文件'));
+  }
+  // 含目录条目或多条目：合并 Map → openFiles（新 API，include 缺省展开）
+  return MdpkgWeb.openFiles(files);
+}
+
+// 统一流程：快照 → 收集 → 分派（异步读取在 drop handler 之外继续）
+async function openSnapshot(snapshot) {
+  if (!snapshot.length) return;
+  errbox.style.display = 'none';
+  const { files, warnings, error } = await collectEntries(snapshot);
+  if (error) { showError(new Error(error)); return; }
+  if (files.size === 0) { showError(new Error('没有可读取的文件条目')); return; }
+  const r = dispatch(snapshot, files);
+  r.then((res) => {
+    showResult(res);
+    // 收集期跳过的条目（权限/损坏）汇总提示
+    if (warnings.length) statusEl.textContent += ` · 跳过 ${warnings.length} 个无法读取的条目`;
+  }).catch(showError);
+}
+
+// 单文件打开（既有三分支：.md → openMarkdown；.mdpkg/.zip → openMdpkg；其它 → 提示）
 async function openFile(f) {
   if (!f) return;
   errbox.style.display = 'none';
+  const name = f.name.toLowerCase();
+  const isMd = name.endsWith('.md') || name.endsWith('.markdown');
+  if (!isMd && !name.endsWith('.mdpkg') && !name.endsWith('.zip')) {
+    showError(new Error('仅支持直接打开 .md / .mdpkg / .zip 文件'));
+    return;
+  }
   statusEl.textContent = `正在打开 ${f.name}（${(f.size / 1048576).toFixed(1)} MB）…`;
   try {
     const buf = new Uint8Array(await f.arrayBuffer());
-    const r = MdpkgWeb.openMdpkg(buf);
+    const r = isMd ? MdpkgWeb.openMarkdown(f.name, buf) : MdpkgWeb.openMdpkg(buf);
     r.then(showResult).catch(showError);
   } catch (e) { showError(e); }
 }
 
 function showError(e) {
+  currentR = null; // 清空导出闭包（防御：panel 已隐藏，导出按钮不可达）
   statusEl.textContent = '';
+  panel.style.display = 'none';
+  document.getElementById('meta').innerHTML = '';
+  document.getElementById('entries').innerHTML = '';
+  document.getElementById('preview').srcdoc = '';
   errbox.style.display = 'block';
   errbox.textContent = String(e && e.message ? e.message : e);
 }
 
 function showResult(r) {
+  currentR = r; // 导出闭包：记录当前打开结果（3.2）
   statusEl.textContent = '';
   panel.style.display = 'block';
+  if (r.unverified) statusEl.textContent = '⚠ 未校验来源（缺少 manifest.json），按规则推断入口 ' + (r.entry || '—');
 
   const v = r.validation;
   const badge = document.getElementById('vbadge');
   badge.className = 'badge ' + (v.ok ? 'ok' : 'bad');
-  badge.textContent = v.ok ? 'OK' : 'FAIL';
+  badge.textContent = v.ok ? 'OK' : (r.unverified ? '未校验' : 'FAIL');
+  badge.title = r.unverified ? '缺少 manifest.json，内容已按推断入口渲染' : '';
   document.getElementById('verrors').innerHTML = v.errors.map((e) => '<li>' + esc(e) + '</li>').join('');
   document.getElementById('vwarnings').innerHTML = v.warnings.map((w) => '<li>' + esc(w) + '</li>').join('');
 
   document.getElementById('meta').innerHTML =
     '格式 ' + esc(r.manifest?.format ?? '-') + ' · spec ' + esc(r.manifest?.spec_version ?? '-') +
-    ' · 入口 <code>' + esc(r.manifest?.entrypoint ?? 'document.md') + '</code> · 外部引用 ' + v.externalCount +
+    ' · 入口 <code>' + esc(r.manifest?.entrypoint ?? r.entry ?? 'document.md') + '</code> · 外部引用 ' + v.externalCount +
     (r.degraded ? ' · <b>包过大已降级</b>' : '');
 
   document.getElementById('ecount').textContent = String(r.files.size);
@@ -137,6 +376,55 @@ function showResult(r) {
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
+
+// ===== 导出（组 3）：四格式 + 打印。handler 经 currentR 闭包取当前打开结果 =====
+
+// 动作表：data-kind → 扩展名 / MIME / 内容生成（与库 API 一一对应，见 design D3）
+const EXPORT_KINDS = {
+  md:    { ext: '.md',    mime: 'text/markdown',            make: (r) => MdpkgWeb.toMarkdown(r.files) },
+  mdpkg: { ext: '.mdpkg', mime: 'application/octet-stream', make: (r) => MdpkgWeb.packMdpkg(r.files, r.manifest ?? undefined) },
+  html:  { ext: '.html',  mime: 'text/html',                make: (r) => MdpkgWeb.toHtml(r.files) },
+  zip:   { ext: '.zip',   mime: 'application/octet-stream', make: (r) => MdpkgWeb.toZip(r.files) },
+};
+
+// 导出文件名（3.2）：入口 basename 去扩展名 + 目标扩展名（doc.md → doc.md/doc.mdpkg/doc.html/doc.zip）；entry 为空 → document 兜底
+function exportName(kind) {
+  const base = (currentR && currentR.entry) ? String(currentR.entry).split('/').pop() : 'document';
+  const stem = base.replace(/\.[^./]*$/, '') || 'document';
+  return stem + kind.ext;
+}
+
+// 触发下载（3.2）：objectURL + 临时 <a download> 点击，随后 revokeObjectURL 清理
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a); // 部分浏览器要求 <a> 已在文档中才触发点击
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// 导出入口（3.3）：生成内容 → Blob → 下载；成功提示「已导出 xxx」，失败复用 showError（不崩溃）
+function exportCurrent(kind) {
+  if (!currentR) return; // 导出栏随 panel 隐藏，正常不可达；防御性返回
+  try {
+    const spec = EXPORT_KINDS[kind];
+    const name = exportName(spec);
+    downloadBlob(new Blob([spec.make(currentR)], { type: spec.mime }), name);
+    statusEl.textContent = '已导出 ' + name;
+  } catch (e) {
+    showError(e);
+  }
+}
+
+// 导出栏交互：事件委托（四按钮共用一个动作表）；打印为独立按钮（window.print 浏览器原生 pdf 兜底）
+document.getElementById('exportbar').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-kind]');
+  if (btn) exportCurrent(btn.dataset.kind);
+});
+document.getElementById('btnprint').addEventListener('click', () => window.print());
 </script>
 </body>
 </html>

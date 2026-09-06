@@ -1,0 +1,14 @@
+{
+  "id": "lenient-open-dict-order",
+  "title": "宽容打开：无默认名时取最浅 .md（同深度码位序）为入口",
+  "kind": "render",
+  "lenient": true,
+  "expect": {
+    "htmlContains": [
+      "第一章"
+    ],
+    "htmlNotContains": [
+      "第二章"
+    ]
+  }
+}

@@ -18,6 +18,9 @@ export const LIMITS = {
   ratio: 1000, // 压缩比
 };
 
+// fflate Unzip 单次 push 递归解析在 ~2108 条目处静默截断（issue #1），取 1000 留余量
+const ZIP_CHUNK_ENTRIES = 1000;
+
 const ILLEGAL = /(^|[\\/])\.\.([\\/]|$)|\\|\0|^[A-Za-z]:|^[/\\]/u;
 
 /** 路径规范化：NFC 归一化 + 拒绝非法路径。返回包内相对路径（分隔符 /） */
@@ -75,6 +78,66 @@ export function pack(files: Map<string, Uint8Array>, manifest?: object): Uint8Ar
   return zipSync(zipped, { mtime: MDE_EPOCH });
 }
 
+/**
+ * 打包（不注入 manifest.json）：docx 等非 mdpkg 容器用。
+ * 与 pack() 相同的确定性规则（固定顺序 + 固定 mtime + 逐条目压缩级别），
+ * 但输出是纯用户文件集，不附加任何元数据条目。
+ */
+export function packRaw(files: Map<string, Uint8Array>): Uint8Array {
+  const seen = new Map<string, string>(); // 归一化路径 → 原始路径
+  const zipped: Record<string, [Uint8Array, { level: number }]> = {};
+  // 按路径码位升序（fflate 按插入顺序写条目，不自动排序）
+  const order = [...files.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const p of order) {
+    const key = normalizePath(p);
+    const lower = key.toLowerCase();
+    const prev = seen.get(lower);
+    if (prev !== undefined && prev !== key) throw new MdeError(E.E201, `路径冲突（仅大小写不同）: ${prev} vs ${key}`);
+    seen.set(lower, key);
+    const ext = key.split('.').pop()?.toLowerCase() ?? '';
+    zipped[key] = [files.get(p)!, { level: STORE_EXT.has(ext) ? 0 : 9 }];
+  }
+  return zipSync(zipped, { mtime: MDE_EPOCH });
+}
+
+/**
+ * 按 local file header 边界将 ZIP 切块，使每块条目数 ≤ maxEntries。
+ * 目的：fflate Unzip 单次 push 递归解析在 ~2108 条目处静默截断（issue #1），
+ *       分块后每块递归深度 ≤ 块内条目数，避免栈溢出丢内容。
+ * 退化：任何解析异常（不完整 header、长度溢出）→ 返回 [data]（整块，保持既有行为）。
+ */
+function chunkZIP(data: Uint8Array, maxEntries: number): Uint8Array[] {
+  if (maxEntries <= 0 || data.length < 30) return [data];
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const chunks: Uint8Array[] = [];
+  let chunkStart = 0, count = 0, i = 0;
+
+  while (i <= data.length - 4) {
+    // 找 local file header 签名 PK\x03\x04
+    if (data[i] !== 0x50 || data[i + 1] !== 0x4b || data[i + 2] !== 0x03 || data[i + 3] !== 0x04) { i++; continue; }
+    // 不完整 header → 退化
+    if (i + 30 > data.length) return [data];
+    const nameLen = dv.getUint16(i + 26, true);
+    const extraLen = dv.getUint16(i + 28, true);
+    const compSize = dv.getUint32(i + 18, true);
+    const entryEnd = i + 30 + nameLen + extraLen + compSize;
+    // 长度溢出 → 退化（用真实字段跳过条目体，防内容中 PK\x03\x04 伪签名误导）
+    if (entryEnd > data.length) return [data];
+    count++;
+    // 达到 maxEntries 且还有后续数据（central dir/EOCD）→ 在条目边界切一块
+    if (count >= maxEntries && entryEnd < data.length) {
+      chunks.push(data.subarray(chunkStart, entryEnd));
+      chunkStart = entryEnd;
+      count = 0;
+    }
+    i = entryEnd; // 跳到条目末尾继续扫描
+  }
+
+  // 最后一块包含 central directory + EOCD（必须包含全部剩余字节）
+  if (chunkStart < data.length) chunks.push(data.subarray(chunkStart));
+  return chunks.length > 0 ? chunks : [data];
+}
+
 /** 解包：流式读取，边读边计数，超限立即中断（不解压、不落盘） */
 export function unpack(data: Uint8Array): Promise<Map<string, Uint8Array>> {
   return new Promise((res, rej) => {
@@ -94,17 +157,20 @@ export function unpack(data: Uint8Array): Promise<Map<string, Uint8Array>> {
         const path = normalizePath(f.name);
         const chunks: Uint8Array[] = [];
         pending++;
+        // 注意：ondata 内不再调用 finish()——分块 push 下 pending 可能在块间归零，
+        // 若此时 resolve 会跳过后续块的内容。finish() 仅在全部 push 结束后调用一次。
         f.ondata = (err, chunk, final) => {
           if (err) return rej(new MdeError(E.E101, String(err)));
           chunks.push(chunk);
-          if (final) { out.set(path, concat(chunks)); pending--; finish(); }
+          if (final) { out.set(path, concat(chunks)); pending--; }
         };
         f.start();
       } catch (e) { rej(e); }
     });
     uz.register(UnzipInflate);
     uz.register(UnzipPassThrough);
-    uz.push(data, true);
+    const chunks = chunkZIP(data, ZIP_CHUNK_ENTRIES);
+    for (let i = 0; i < chunks.length; i++) uz.push(chunks[i], i === chunks.length - 1);
     finish();
   });
 }
@@ -127,14 +193,15 @@ export function list(data: Uint8Array): Promise<{ path: string; size: number; co
       try {
         items.push({ path: normalizePath(f.name), size: f.originalSize, compressed: f.size });
         pending++;
-        // 只读 header：消费流但不保留数据
-        f.ondata = (_err, _chunk, final) => { if (final) { pending--; finish(); } };
+        // 只读 header：消费流但不保留数据（finish 仅在全部 push 结束后调用）
+        f.ondata = (_err, _chunk, final) => { if (final) { pending--; } };
         f.start();
       } catch (e) { rej(e); }
     });
     uz.register(UnzipInflate);
     uz.register(UnzipPassThrough);
-    uz.push(data, true);
+    const chunks = chunkZIP(data, ZIP_CHUNK_ENTRIES);
+    for (let i = 0; i < chunks.length; i++) uz.push(chunks[i], i === chunks.length - 1);
     finish();
   });
 }

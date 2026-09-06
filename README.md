@@ -29,7 +29,7 @@ In plain Markdown, images are references — send one file and you lose the atta
 | Symbol expansion  | `(tm)` → ™, `-->` → →; applied only to plain text at render time, the source text is never modified                  |
 | File inclusion    | `<<< includes/ch1.md`, expanded before parsing; supports nesting and cycle detection                                 |
 
-**What "single file" really means:** delivery and transfer involve exactly one file. It does not mean opening `.mdpkg` in a text editor shows the fully rendered document — that is the job of `unpack` / `export` / `render`.
+**What "single file" really means:** delivery and transfer involve exactly one file. It does not mean opening `.mdpkg` in a text editor shows the fully rendered document — that is the job of `unpack` / `export` / `render`. Once opened, the same content can be exported to **md / html / docx / zip** from the CLI or browser library.
 
 ## Quick start
 
@@ -61,10 +61,48 @@ Requires Node 22.18+ (runs `.ts` directly via built-in type stripping, no build 
 | `export --raw <pkg> -o dir`      | Preserves structure, text untouched                                                                |
 | `export --expanded <pkg> -o dir` | Includes expanded, relative paths rewritten against the package root (openable by any MD tool)     |
 | `diff a.mdpkg b.mdpkg`           | Unpacks both and runs `diff -ruN`                                                                  |
+| `render <pkg> --format docx -o out.docx` | Renders to OOXML document (resources embedded, SVG degraded to alt text)                           |
+| `export --md <pkg> -o out.md`    | Exports expanded entry Markdown as a single file (include inlined, symbols kept as source text)    |
+| `export --zip <pkg> -o out.zip`  | Exports a standard zip deliverable (expanded Markdown + resources + README, no manifest)          |
+
+## Opening
+
+`render`, `export`, and the browser `openMdpkg` accept not only `.mdpkg` but also **plain ZIP archives** (a directory tree with Markdown, no `manifest.json`). The `.zip` extension is treated the same as `.mdpkg`.
+
+When no `manifest.json` is present, the entrypoint is inferred by this priority: `document.md` (at any depth, shallowest wins) > `README.md` > `README.zh-CN.md` > first remaining `.md` in lexicographic order. Hidden paths (starting with `.`) are excluded. If no `.md` file exists, opening fails with `MDPKG-E303`.
+
+Lenient-opened packages are flagged as **unverified source (missing manifest.json)**: the CLI prints a notice on stderr, and the browser API returns `unverified: true` along with `entry` (the actual entrypoint inferred). This is separate from `degraded` (the >50 MB resource fallback) — consumers adding lenient-open support should handle the new `unverified` and `entry` fields. The `demo.html` viewer shows an "unverified" badge for such packages.
+
+`validate` still rejects packages without a manifest (`MDPKG-E102`); lenient opening provides no integrity check (there is no declaration to verify). Re-packaging a lenient-opened archive with `pack` produces a conformant `.mdpkg`.
+
+The browser library also opens **`.md` files directly** (single-file render; `<<<` include directives degrade to visible text) and supports **dropping in a folder** (sibling attachments are collected and images inlined). Relative references resolve against the document's directory: `../assets/a.png` and `./` refs match package resources, and non-ASCII (e.g. Chinese) paths are supported.
 
 ## Browser library
 
-`packages/mdpkg/web/` ships `mdpkg-web` — an ESM/IIFE bundle for browsers. `openMdpkg` reads a package, `packMdpkg` repacks edits (byte-identical to CLI `pack`), `readEntrySource` reads a single entry. `demo.html` exercises the full flow. Build with `npm run build:web`.
+`packages/mdpkg/web/` ships `mdpkg-web` — an ESM/IIFE bundle for browsers. Build with `npm run build:web`.
+
+Opening:
+- `openMdpkg` — reads `.mdpkg` / `.zip` packages
+- `openMarkdown` — renders a single `.md` file
+- `openFiles` — unified entry for arbitrary `Map<string, Uint8Array>` / directory collections
+
+Editing:
+- `packMdpkg` — repacks edits (byte-identical to CLI `pack`)
+- `readEntrySource` — reads a single entry's source text
+
+Export:
+- `toMarkdown` — expanded Markdown (include inlined, symbols kept as source text)
+- `toHtml` — self-contained HTML (same pipeline as `openMdpkg().html`)
+- `toDocx` — OOXML document (resources embedded, SVG degraded to alt text)
+- `toZip` — standard zip deliverable (expanded Markdown + resources + README)
+
+Utilities:
+- `expand` — include expansion + path rewriting
+- `buildManifest` — construct a manifest from files
+- `toBase64` — bytes to base64
+- `MdeError` — error class
+
+Export format matrix: **md** / **mdpkg** / **html** / **zip** / **docx** (pdf falls back to browser print). `demo.html` exercises the full flow including the export bar.
 
 ## Format
 
@@ -80,7 +118,7 @@ Full specification: [`spec/mdpkg-format-spec.md`](spec/mdpkg-format-spec.md) (Ch
 
 ```bash
 cd packages/mdpkg && node --test test/*.test.ts
-# 102 tests: 100 pass + 2 skip
+# 225 tests
 ```
 
 Fixtures are implementation-agnostic data (`case.json` + `input/`); any implementation passing the same set is considered conformant.

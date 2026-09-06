@@ -1,0 +1,9 @@
+{
+  "id": "lenient-open-validate-e102",
+  "title": "宽容打开不放松校验：validate 对无 manifest 的目录仍报 E102",
+  "kind": "validate",
+  "lenient": true,
+  "expect": {
+    "errorCode": "MDPKG-E102"
+  }
+}

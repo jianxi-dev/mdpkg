@@ -6,9 +6,12 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pack, unpack, list, collectFiles, normalizePath } from './container.ts';
-import { buildManifest, validatePackage, checkClosure, collectReferences, DEFAULT_ENTRYPOINT } from './manifest.ts';
+import { buildManifest, validatePackage, checkClosure, collectReferences, inferEntrypoint, DEFAULT_ENTRYPOINT } from './manifest.ts';
 import { expand } from './include.ts';
 import { render, wrapDocument, DEFAULT_MAX_INLINE_BYTES } from './render.ts';
+import { toDocx } from './docx.ts';
+import { buildZipExport } from './zip-export.ts';
+import { toMarkdown } from './markdown-export.ts';
 import { MdeError, EXIT, E } from './errors.ts';
 
 function die(msg: string, code: number): never {
@@ -22,9 +25,12 @@ const { positionals, values } = parseArgs({
     o: { type: 'string' },
     inline: { type: 'boolean' },
     dir: { type: 'boolean' },
+    format: { type: 'string' },
     'referenced-only': { type: 'boolean' },
     raw: { type: 'boolean' },
     expanded: { type: 'boolean' },
+    zip: { type: 'boolean' },
+    md: { type: 'boolean' },
   },
 });
 const [cmd, ...rest] = positionals;
@@ -85,25 +91,69 @@ async function main() {
 
   if (cmd === 'export') {
     const pkg = rest[0];
-    const mode = values.raw ? 'raw' : values.expanded ? 'expanded' : null;
-    if (!pkg || !mode || !out) die('用法: mdpkg export (--raw | --expanded) <file.mdpkg> -o <dir>', EXIT.USAGE);
-    const files = await unpack(readPkg(pkg));
-    const manifest = files.has('manifest.json') ? JSON.parse(new TextDecoder().decode(files.get('manifest.json')!)) : {};
-    const entry: string = manifest.entrypoint ?? DEFAULT_ENTRYPOINT;
-    for (const [p, data] of files) {
-      if (p === 'manifest.json') continue;
-      if (mode === 'expanded' && p === entry) continue; // 入口单独写展开后的版本
-      const dest = join(out, p);
-      mkdirSync(dirname(dest), { recursive: true });
-      writeFileSync(dest, data);
+    // --zip 与 --raw/--expanded 互斥（布尔选项用 in 判定，与 render 的 inline/dir 一致）
+    if (values.zip && ('raw' in values || 'expanded' in values)) {
+      die('用法: mdpkg export --zip 与 --raw/--expanded 互斥', EXIT.USAGE);
     }
+    // --md 与 --raw/--expanded/--zip 互斥（存在性 in 判定，与 --zip 互斥同一模式）
+    if (values.md && ('raw' in values || 'expanded' in values || 'zip' in values)) {
+      die('用法: mdpkg export --md 与 --raw/--expanded/--zip 互斥', EXIT.USAGE);
+    }
+    const mode = values.raw ? 'raw' : values.expanded ? 'expanded' : values.zip ? 'zip' : values.md ? 'md' : null;
+    if (!pkg || !mode) die('用法: mdpkg export (--raw | --expanded | --zip | --md) <file.mdpkg> [-o <dir|zip|md>]', EXIT.USAGE);
+    if (mode !== 'zip' && mode !== 'md' && !out) die('用法: mdpkg export (--raw | --expanded) <file.mdpkg> -o <dir>', EXIT.USAGE);
+    const files = await unpack(readPkg(pkg));
+    if (mode === 'zip') {
+      // zip 交付物：复用 buildZipExport（include 展开 + 路径重写 + README 已在核心完成，CLI 不重复展开）
+      // -o 缺省按包名替换 .zip；无 .mdpkg 后缀时追加 .zip（避免输出名=输入路径覆盖原包）
+      const target = resolve(out ?? defaultOutName(pkg, '.zip'));
+      const bytes = buildZipExport(files);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, bytes);
+      process.stdout.write(`export --zip: 展开后 Markdown + 资源 + README → ${target}\n`);
+      return;
+    }
+    if (mode === 'md') {
+      // md 单文件导出：复用 src 层 toMarkdown（入口解析 + include 展开 + 路径重写已在核心完成，
+      // 符号保持源文本；CLI 不依赖 web 模块、不重复展开逻辑）
+      // -o 缺省按包名替换 .md；无 .mdpkg 后缀时追加 .md（避免输出名=输入路径覆盖原包）
+      const target = resolve(out ?? defaultOutName(pkg, '.md'));
+      const text = toMarkdown(files);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, new TextEncoder().encode(text));
+      process.stdout.write(`export --md: 展开后 Markdown → ${target}\n`);
+      return;
+    }
+    const manifest = files.has('manifest.json') ? JSON.parse(new TextDecoder().decode(files.get('manifest.json')!)) : {};
     if (mode === 'expanded') {
+      // expanded 需要真实入口（展开入口文档），无 md 时 E303 合理
+      const entry = manifest.entrypoint ?? inferEntrypoint(files);
+      if (!files.has('manifest.json')) {
+        process.stderr.write(`提示: 未校验来源（缺少 manifest.json），按规则推断入口 ${entry}\n`);
+      }
+      for (const [p, data] of files) {
+        if (p === 'manifest.json') continue;
+        if (p === entry) continue; // 入口单独写展开后的版本
+        const dest = join(out, p);
+        mkdirSync(dirname(dest), { recursive: true });
+        writeFileSync(dest, data);
+      }
       const { text } = expand(files, entry);
       const dest = join(out, entry);
       mkdirSync(dirname(dest), { recursive: true });
       writeFileSync(dest, new TextEncoder().encode(text));
       process.stdout.write(`export --expanded: 入口已展开（include 已内联、相对路径已按包根重写）→ ${out}\n`);
     } else {
+      // raw 只导出文件树，不需要入口；无 manifest 时保留提示但不含入口名
+      if (!files.has('manifest.json')) {
+        process.stderr.write(`提示: 未校验来源（缺少 manifest.json）\n`);
+      }
+      for (const [p, data] of files) {
+        if (p === 'manifest.json') continue;
+        const dest = join(out, p);
+        mkdirSync(dirname(dest), { recursive: true });
+        writeFileSync(dest, data);
+      }
       process.stdout.write(`export --raw: 结构保持、文本未改 → ${out}\n`);
     }
     return;
@@ -129,8 +179,26 @@ async function main() {
 
   if (cmd === 'render') {
     const pkg = rest[0];
-    if (!pkg) die('用法: mdpkg render <file.mdpkg> [-o out.html] [--inline | --dir]', EXIT.USAGE);
+    if (!pkg) die('用法: mdpkg render <file.mdpkg> [-o out] [--format html|docx] [--inline | --dir]', EXIT.USAGE);
+    const format = values.format ?? 'html';
+    if (format !== 'html' && format !== 'docx') die(`用法: mdpkg render <file.mdpkg> [-o out] [--format html|docx]（收到: ${format}）`, EXIT.USAGE);
+    // docx 是单文件容器，内联/目录二元模式不适用（规范：互斥报用法错误）
+    if (format === 'docx' && ('inline' in values || 'dir' in values)) {
+      die('用法: mdpkg render: --format docx 与 --inline/--dir 互斥', EXIT.USAGE);
+    }
     const files = await unpack(readPkg(pkg));
+    if (!files.has('manifest.json')) {
+      process.stderr.write(`提示: 未校验来源（缺少 manifest.json），按规则推断入口 ${inferEntrypoint(files)}\n`);
+    }
+    if (format === 'docx') {
+      // docx 输出：复用同一管线（解包 → 校验 → include 展开 → 解析 → 符号转换），仅输出目标不同
+      const target = resolve(out ?? defaultOutName(pkg, '.docx'));
+      const bytes = toDocx(files, {}, (w) => process.stderr.write(`警告: ${w}\n`));
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, bytes);
+      process.stdout.write(`render: ${target}（docx 格式）\n`);
+      return;
+    }
     const r = render(files, { inline: 'inline' in values, dir: 'dir' in values });
     const target = resolve(out ?? pkg.replace(/\.mdpkg$/i, '.html'));
     mkdirSync(dirname(target), { recursive: true });
@@ -182,6 +250,11 @@ async function main() {
 
 function require_relative(base: string, target: string): string {
   return target.startsWith(base + '/') ? target.slice(base.length + 1) : '';
+}
+
+/** 缺省输出名：包路径以 .mdpkg 结尾则替换扩展名，否则追加（避免无后缀时输出=输入覆盖原包） */
+function defaultOutName(pkg: string, ext: string): string {
+  return /\.mdpkg$/i.test(pkg) ? pkg.replace(/\.mdpkg$/i, ext) : pkg + ext;
 }
 
 main().catch((e: unknown) => {

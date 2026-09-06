@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render, wrapDocument, DEFAULT_MAX_INLINE_BYTES } from '../src/render.ts';
 import { buildManifest } from '../src/manifest.ts';
+import { MdeError, E } from '../src/errors.ts';
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, ...new Uint8Array(500).fill(7)]);
@@ -85,4 +86,62 @@ test('wrapDocument: 输出 HTML 壳并转义标题', () => {
   assert.ok(doc.startsWith('<!doctype html>'));
   assert.ok(doc.includes('<p>正文</p>'));
   assert.ok(!doc.includes('<script>x</script>'), '标题应被转义');
+});
+
+test('include 开关: 显式 include:false 时 <<< 降级为可见文本，不抛 E508', () => {
+  const files = new Map<string, Uint8Array>([['document.md', enc('# 标题\n\n<<< missing.md\n')]]);
+  const html = render(files, { include: false }).html;
+  // rehype-stringify 对文本中的 < 用数字实体（&#x3C;），浏览器渲染即可见的 <<<
+  assert.ok(html.includes('&#x3C;&#x3C;&#x3C;'), '未展开的 include 指令应降级为可见文本');
+});
+
+test('include 开关: 缺省与显式 include:true 均展开，缺失目标抛 E508（既有行为锁定）', () => {
+  const files = new Map<string, Uint8Array>([['document.md', enc('# 标题\n\n<<< missing.md\n')]]);
+  assert.throws(() => render(files), (e: unknown) => e instanceof MdeError && e.code === E.E508, '缺省应展开并抛 E508');
+  assert.throws(() => render(files, { include: true }), (e: unknown) => e instanceof MdeError && e.code === E.E508, '显式 true 应展开并抛 E508');
+});
+
+test('include 开关: 显式 include:false 覆盖 manifest.extensions.include 缺省展开', () => {
+  const files = pkg('# 标题\n\n<<< missing.md\n').withManifest();
+  const html = render(files, { include: false }).html;
+  assert.ok(html.includes('&#x3C;&#x3C;&#x3C;'), '显式 false 应优先于 manifest 缺省');
+});
+
+// ============ 相对引用解析（folder-drop-open 组 0，任务 0.5） ============
+
+test('相对引用: docs/doc.md 引用 ../assets/a.png 内联（zip2 场景，不再 E202）', () => {
+  const files = new Map<string, Uint8Array>([
+    ['docs/doc.md', enc('![a](../assets/a.png)\n')],
+    ['assets/a.png', PNG],
+  ]);
+  const html = render(files, { inline: true }).html;
+  assert.ok(html.includes('src="data:image/png;base64,'), '父级引用应解析为 assets/a.png 并内联');
+});
+
+test('相对引用: 越根 ../../x.png 不抛错不内联', () => {
+  const files = new Map<string, Uint8Array>([
+    ['docs/doc.md', enc('![a](../../x.png)\n')],
+  ]);
+  const html = render(files, { inline: true }).html;
+  assert.ok(!html.includes('data:image/png'), '越根引用不应内联');
+  assert.ok(html.includes('../../x.png'), '越根引用应保留原文');
+});
+
+test('相对引用: ./ 同级引用内联', () => {
+  const files = new Map<string, Uint8Array>([
+    ['docs/doc.md', enc('![a](./assets/a.png)\n')],
+    ['docs/assets/a.png', PNG],
+  ]);
+  const html = render(files, { inline: true }).html;
+  assert.ok(html.includes('src="data:image/png;base64,'), '同级引用应解析为 docs/assets/a.png 并内联');
+});
+
+test('相对引用: include 内 ../ 引用重写后内联', () => {
+  const files = new Map<string, Uint8Array>([
+    ['document.md', enc('# 标题\n\n<<< includes/c.md\n')],
+    ['includes/c.md', enc('![a](../assets/b.png)\n')],
+    ['assets/b.png', PNG],
+  ]);
+  const html = render(files, { inline: true }).html;
+  assert.ok(html.includes('src="data:image/png;base64,'), '被包含文件的父级引用应重写为 assets/b.png 并内联');
 });

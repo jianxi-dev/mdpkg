@@ -2979,7 +2979,7 @@ var MdpkgWeb = (() => {
         }
       }
       exports.compileSchema = compileSchema;
-      function resolveRef(root5, baseId, ref) {
+      function resolveRef2(root5, baseId, ref) {
         var _a2;
         ref = (0, resolve_1.resolveUrl)(this.opts.uriResolver, baseId, ref);
         const schOrFunc = root5.refs[ref];
@@ -2996,7 +2996,7 @@ var MdpkgWeb = (() => {
           return;
         return root5.refs[ref] = inlineOrCompile.call(this, _sch);
       }
-      exports.resolveRef = resolveRef;
+      exports.resolveRef = resolveRef2;
       function inlineOrCompile(sch) {
         if ((0, resolve_1.inlineRef)(sch.schema, this.opts.inlineRefs))
           return sch.schema;
@@ -7543,10 +7543,16 @@ var MdpkgWeb = (() => {
     MdeError: () => MdeError,
     buildManifest: () => buildManifest,
     expand: () => expand,
+    openFiles: () => openFiles,
+    openMarkdown: () => openMarkdown,
     openMdpkg: () => openMdpkg,
     packMdpkg: () => packMdpkg,
     readEntrySource: () => readEntrySource,
-    toBase64: () => toBase64
+    toBase64: () => toBase64,
+    toDocx: () => toDocx,
+    toHtml: () => toHtml2,
+    toMarkdown: () => toMarkdown,
+    toZip: () => buildZipExport
   });
 
   // node_modules/fflate/esm/browser.js
@@ -8750,6 +8756,7 @@ var MdpkgWeb = (() => {
     ratio: 1e3
     // 压缩比
   };
+  var ZIP_CHUNK_ENTRIES = 1e3;
   var ILLEGAL = /(^|[\\/])\.\.([\\/]|$)|\\|\0|^[A-Za-z]:|^[/\\]/u;
   function normalizePath(raw2) {
     if (new TextEncoder().encode(raw2).length > MAX_PATH_BYTES) throw new MdeError(E.E204, `\u8DEF\u5F84\u8D85\u957F: ${raw2.slice(0, 40)}\u2026`);
@@ -8812,6 +8819,48 @@ var MdpkgWeb = (() => {
     }
     return zipSync(zipped, { mtime: MDE_EPOCH });
   }
+  function packRaw(files) {
+    const seen = /* @__PURE__ */ new Map();
+    const zipped = {};
+    const order2 = [...files.keys()].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    for (const p2 of order2) {
+      const key2 = normalizePath(p2);
+      const lower = key2.toLowerCase();
+      const prev = seen.get(lower);
+      if (prev !== void 0 && prev !== key2) throw new MdeError(E.E201, `\u8DEF\u5F84\u51B2\u7A81\uFF08\u4EC5\u5927\u5C0F\u5199\u4E0D\u540C\uFF09: ${prev} vs ${key2}`);
+      seen.set(lower, key2);
+      const ext = key2.split(".").pop()?.toLowerCase() ?? "";
+      zipped[key2] = [files.get(p2), { level: STORE_EXT.has(ext) ? 0 : 9 }];
+    }
+    return zipSync(zipped, { mtime: MDE_EPOCH });
+  }
+  function chunkZIP(data, maxEntries) {
+    if (maxEntries <= 0 || data.length < 30) return [data];
+    const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const chunks = [];
+    let chunkStart = 0, count = 0, i2 = 0;
+    while (i2 <= data.length - 4) {
+      if (data[i2] !== 80 || data[i2 + 1] !== 75 || data[i2 + 2] !== 3 || data[i2 + 3] !== 4) {
+        i2++;
+        continue;
+      }
+      if (i2 + 30 > data.length) return [data];
+      const nameLen = dv.getUint16(i2 + 26, true);
+      const extraLen = dv.getUint16(i2 + 28, true);
+      const compSize = dv.getUint32(i2 + 18, true);
+      const entryEnd = i2 + 30 + nameLen + extraLen + compSize;
+      if (entryEnd > data.length) return [data];
+      count++;
+      if (count >= maxEntries && entryEnd < data.length) {
+        chunks.push(data.subarray(chunkStart, entryEnd));
+        chunkStart = entryEnd;
+        count = 0;
+      }
+      i2 = entryEnd;
+    }
+    if (chunkStart < data.length) chunks.push(data.subarray(chunkStart));
+    return chunks.length > 0 ? chunks : [data];
+  }
   function unpack(data) {
     return new Promise((res, rej) => {
       const out = /* @__PURE__ */ new Map();
@@ -8832,15 +8881,14 @@ var MdpkgWeb = (() => {
           total += orig;
           if (total > LIMITS.total) throw new MdeError(E.E604, `\u603B\u89E3\u538B\u8D85\u8FC7 ${LIMITS.total / 1048576}MB`);
           const path2 = normalizePath(f.name);
-          const chunks = [];
+          const chunks2 = [];
           pending++;
           f.ondata = (err2, chunk, final) => {
             if (err2) return rej(new MdeError(E.E101, String(err2)));
-            chunks.push(chunk);
+            chunks2.push(chunk);
             if (final) {
-              out.set(path2, concat(chunks));
+              out.set(path2, concat(chunks2));
               pending--;
-              finish();
             }
           };
           f.start();
@@ -8850,7 +8898,8 @@ var MdpkgWeb = (() => {
       });
       uz.register(UnzipInflate);
       uz.register(UnzipPassThrough);
-      uz.push(data, true);
+      const chunks = chunkZIP(data, ZIP_CHUNK_ENTRIES);
+      for (let i2 = 0; i2 < chunks.length; i2++) uz.push(chunks[i2], i2 === chunks.length - 1);
       finish();
     });
   }
@@ -9305,6 +9354,22 @@ var MdpkgWeb = (() => {
   // src/manifest.ts
   var import__ = __toESM(require__(), 1);
 
+  // src/refpath.ts
+  function resolveRef(baseDir, ref) {
+    if (!ref) return null;
+    const out = [];
+    for (const seg of [...baseDir.split("/"), ...ref.split("/")]) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") {
+        if (out.length === 0) return null;
+        out.pop();
+        continue;
+      }
+      out.push(seg);
+    }
+    return out.length === 0 ? null : out.join("/");
+  }
+
   // ../../spec/schema/manifest-1.0.json
   var manifest_1_0_default = {
     $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -9358,15 +9423,16 @@ var MdpkgWeb = (() => {
     return line.replace(/\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g, (whole, raw2) => {
       if (isUrl(raw2) || raw2.startsWith("#") || raw2.startsWith("/")) return whole;
       const [pathPart, ...rest] = raw2.split(/(?=[?#])/);
-      const rewritten = normalizePath(`${baseDir}/${pathPart}`);
-      return `](${rewritten}${rest.join("")})`;
+      const resolved = resolveRef(baseDir, pathPart);
+      if (resolved === null) return whole;
+      return `](${resolved}${rest.join("")})`;
     });
   }
   function dirname(path2) {
     const i2 = path2.lastIndexOf("/");
     return i2 === -1 ? "" : path2.slice(0, i2);
   }
-  function expandFile(files, path2, depth, stack, st) {
+  function expandFile(files, path2, depth, stack, st, isEntry = false) {
     if (depth > INCLUDE_LIMITS.depth) throw new MdeError(E.E504, `include \u6DF1\u5EA6\u8D85\u8FC7 ${INCLUDE_LIMITS.depth}\uFF08\u6808: ${stack.join(" \u2192 ")}\uFF09`);
     if (stack.includes(path2)) throw new MdeError(E.E507, `\u68C0\u6D4B\u5230\u5FAA\u73AF\u5305\u542B: ${[...stack, path2].join(" \u2192 ")}`);
     const data = files.get(path2);
@@ -9396,10 +9462,10 @@ var MdpkgWeb = (() => {
         }
         if (!norm.toLowerCase().endsWith(".md")) throw new MdeError(E.E503, `include \u76EE\u6807\u975E Markdown: ${norm}`);
         if (++st.count > INCLUDE_LIMITS.maxCount) throw new MdeError(E.E506, `include \u6B21\u6570\u8D85\u8FC7 ${INCLUDE_LIMITS.maxCount}`);
-        expandFile(files, norm, depth + 1, stack, st);
+        expandFile(files, norm, depth + 1, stack, st, false);
         return;
       }
-      st.out.push(inFence ? raw2 : rewriteLine(raw2, base));
+      st.out.push(isEntry || inFence ? raw2 : rewriteLine(raw2, base));
       st.sources.push({ file: path2, line: idx + 1 });
       st.bytes += raw2.length + 1;
       if (st.bytes > INCLUDE_LIMITS.maxBytes) throw new MdeError(E.E505, `\u5C55\u5F00\u540E\u8D85\u8FC7 ${INCLUDE_LIMITS.maxBytes / 1048576}MB`);
@@ -9408,7 +9474,7 @@ var MdpkgWeb = (() => {
   }
   function expand(files, entry) {
     const st = { count: 0, bytes: 0, sources: [], out: [] };
-    expandFile(files, entry, 1, [], st);
+    expandFile(files, entry, 1, [], st, true);
     return { text: st.out.join("\n"), sources: st.sources, count: st.count };
   }
 
@@ -16118,6 +16184,23 @@ var MdpkgWeb = (() => {
   // src/manifest.ts
   var SPEC_VERSION = "1.0";
   var DEFAULT_ENTRYPOINT = "document.md";
+  function inferEntrypoint(files) {
+    const candidates = [...files.keys()].filter((p2) => {
+      if (!p2.toLowerCase().endsWith(".md")) return false;
+      if (p2.split("/").some((seg) => seg.startsWith("."))) return false;
+      return true;
+    });
+    if (candidates.length === 0) {
+      throw new MdeError(E.E303, "entrypoint \u4E0D\u5B58\u5728\uFF08\u63A8\u65AD\u5931\u8D25\uFF09: \u65E0 Markdown \u6587\u4EF6");
+    }
+    const depth = (p2) => p2.split("/").length;
+    const shallowest = (paths) => [...paths].sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : a > b ? 1 : 0));
+    for (const name of ["document.md", "README.md", "README.zh-CN.md"]) {
+      const matches = candidates.filter((p2) => p2.split("/").pop() === name);
+      if (matches.length > 0) return shallowest(matches)[0];
+    }
+    return shallowest(candidates)[0];
+  }
   var MEDIA = {
     md: "text/markdown",
     markdown: "text/markdown",
@@ -16201,7 +16284,11 @@ var MdpkgWeb = (() => {
         docLinks++;
         return;
       }
-      local.push(normalizePath(baseDir ? `${baseDir}/${p2}` : p2));
+      try {
+        local.push(normalizePath(baseDir ? `${baseDir}/${p2}` : p2));
+      } catch {
+        local.push(baseDir ? `${baseDir}/${p2}` : p2);
+      }
     });
     return { local, external, docLinks };
   }
@@ -16214,11 +16301,32 @@ var MdpkgWeb = (() => {
     const { text: text8, sources } = expand(files, entrypoint);
     const { local } = collectReferences(text8);
     const present = new Set([...files.keys()].map((p2) => normalizePath(p2)));
+    const i2 = entrypoint.lastIndexOf("/");
+    const entryDir = i2 === -1 ? "" : entrypoint.slice(0, i2);
+    const resolveHit = (ref) => {
+      let norm = null;
+      try {
+        norm = normalizePath(ref);
+      } catch {
+      }
+      if (norm !== null && present.has(norm)) return norm;
+      const resolved = resolveRef(entryDir, ref);
+      if (resolved === null) return null;
+      try {
+        norm = normalizePath(resolved);
+      } catch {
+        return null;
+      }
+      return present.has(norm) ? norm : null;
+    };
     for (const ref of new Set(local)) {
-      const target = normalizePath(ref);
-      if (!present.has(target)) throw new MdeError(E.E401, `\u5F15\u7528\u7684\u672C\u5730\u8D44\u6E90\u7F3A\u5931: ${ref}\uFF08\u5165\u53E3 ${entrypoint}\uFF09`);
+      if (resolveHit(ref) === null) throw new MdeError(E.E401, `\u5F15\u7528\u7684\u672C\u5730\u8D44\u6E90\u7F3A\u5931: ${ref}\uFF08\u5165\u53E3 ${entrypoint}\uFF09`);
     }
-    const referenced = new Set(local.map((r) => normalizePath(r)));
+    const referenced = /* @__PURE__ */ new Set();
+    for (const r of local) {
+      const hit = resolveHit(r);
+      if (hit !== null) referenced.add(hit);
+    }
     referenced.add(normalizePath(entrypoint));
     for (const s of sources) referenced.add(normalizePath(s.file));
     return { orphans: [...present].filter((p2) => !referenced.has(p2) && p2 !== "manifest.json") };
@@ -23150,7 +23258,7 @@ var MdpkgWeb = (() => {
   // src/render.ts
   var DEFAULT_MAX_INLINE_BYTES = 50 * 1024 * 1024;
   var isExternal = (src) => /^(https?:)?\/\//i.test(src);
-  function assetsPlugin(files, inline) {
+  function assetsPlugin(files, inline, entryDir) {
     return (tree) => {
       visit(tree, "element", (node2) => {
         if (node2.tagName !== "img" || !node2.properties) return;
@@ -23161,7 +23269,16 @@ var MdpkgWeb = (() => {
           return;
         }
         if (!inline) return;
-        const data = files.get(src);
+        let lookup = src;
+        try {
+          lookup = decodeURIComponent(src);
+        } catch {
+        }
+        let data = files.get(lookup);
+        if (!data && entryDir) {
+          const resolved = resolveRef(entryDir, lookup);
+          if (resolved !== null) data = files.get(resolved);
+        }
         if (!data) return;
         node2.properties.src = `data:${mediaType(src)};base64,${toBase64(data)}`;
       });
@@ -23175,11 +23292,14 @@ var MdpkgWeb = (() => {
     } catch (e) {
       throw new MdeError(E.E302, `manifest.json \u4E0D\u662F\u5408\u6CD5 JSON: ${e.message}`);
     }
-    const entry = manifest.entrypoint ?? DEFAULT_ENTRYPOINT;
+    const hasManifest = manifestRaw !== void 0;
+    const entry = hasManifest && manifest.entrypoint ? manifest.entrypoint : inferEntrypoint(files);
     assertMarkdownEntrypoint(entry);
-    assertSupported(manifest);
+    if (hasManifest) assertSupported(manifest);
     const body3 = files.get(entry);
     if (!body3) throw new MdeError(E.E303, `entrypoint \u4E0D\u5B58\u5728: ${entry}`);
+    const i2 = entry.lastIndexOf("/");
+    const entryDir = i2 === -1 ? "" : entry.slice(0, i2);
     const totalBytes = [...files.entries()].reduce((n, [p2, d]) => p2 === "manifest.json" ? n : n + d.length, 0);
     const max2 = opts.maxInlineBytes ?? DEFAULT_MAX_INLINE_BYTES;
     let mode;
@@ -23191,9 +23311,10 @@ var MdpkgWeb = (() => {
       degraded = mode === "dir";
     }
     const raw2 = new TextDecoder().decode(body3);
-    let expanded = manifest.extensions?.include === false ? raw2 : expand(files, entry).text;
+    const includeEnabled = opts.include ?? !(manifest.extensions?.include === false);
+    let expanded = includeEnabled ? expand(files, entry).text : raw2;
     expanded = expanded.replace(/^(\s*)<<</gm, "$1&lt;&lt;&lt;");
-    const html7 = unified().use(remarkParse).use(remarkGfm).use(symbolsPlugin, { enabled: opts.symbols !== false && manifest.extensions?.symbols !== "off" }).use(remarkRehype).use(rehypeSanitize).use(assetsPlugin, files, mode === "inline").use(rehypeStringify).processSync(guardEscapes(expanded)).toString();
+    const html7 = unified().use(remarkParse).use(remarkGfm).use(symbolsPlugin, { enabled: opts.symbols !== false && manifest.extensions?.symbols !== "off" }).use(remarkRehype).use(rehypeSanitize).use(assetsPlugin, files, mode === "inline", entryDir).use(rehypeStringify).processSync(guardEscapes(expanded)).toString();
     return { html: html7, mode, totalBytes, degraded };
   }
   function wrapDocument(title, bodyHtml) {
@@ -23231,10 +23352,442 @@ ${bodyHtml}
     return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
 
+  // src/markdown-export.ts
+  function toMarkdown(files, opts = {}) {
+    const manifestRaw = files.get("manifest.json");
+    let manifest;
+    try {
+      manifest = manifestRaw ? JSON.parse(new TextDecoder().decode(manifestRaw)) : {};
+    } catch (e) {
+      throw new MdeError(E.E302, `manifest.json \u4E0D\u662F\u5408\u6CD5 JSON: ${e.message}`);
+    }
+    const hasManifest = manifestRaw !== void 0;
+    const entry = hasManifest && manifest.entrypoint ? manifest.entrypoint : inferEntrypoint(files);
+    assertMarkdownEntrypoint(entry);
+    const body3 = files.get(entry);
+    if (!body3) throw new MdeError(E.E303, `entrypoint \u4E0D\u5B58\u5728: ${entry}`);
+    const includeEnabled = opts.include ?? !(manifest.extensions?.include === false);
+    return includeEnabled ? expand(files, entry).text : new TextDecoder().decode(body3);
+  }
+
+  // src/docx.ts
+  var NS = {
+    w: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    r: "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    wp: "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    a: "http://schemas.openxmlformats.org/drawingml/2006/main",
+    pic: "http://schemas.openxmlformats.org/drawingml/2006/picture"
+  };
+  var EMU_PER_INCH = 914400;
+  var DEFAULT_IMAGE_WIDTH_EMU = 6 * EMU_PER_INCH;
+  var DEFAULT_IMAGE_HEIGHT_EMU = Math.round(DEFAULT_IMAGE_WIDTH_EMU * 0.75);
+  var BITMAP_EXT = /* @__PURE__ */ new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+  function esc(s) {
+    return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]);
+  }
+  function degradeHtml(raw2) {
+    return raw2.replace(/<\s*(script|style)\b[\s\S]*?<\s*\/\s*(script|style)\s*>/gi, "");
+  }
+  var isExternal2 = (src) => /^(https?:)?\/\//i.test(src) || /^(mailto|data|tel):/i.test(src) || src.startsWith("#") || src.startsWith("<");
+  function rPrXml(fmt) {
+    let rPr = "";
+    if (fmt.b) rPr += "<w:b/>";
+    if (fmt.i) rPr += "<w:i/>";
+    if (fmt.strike) rPr += "<w:strike/>";
+    if (fmt.code) {
+      rPr += '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/>';
+      rPr += '<w:shd w:val="clear" w:color="auto" w:fill="F2F2F2"/>';
+    }
+    if (fmt.link) rPr += '<w:rStyle w:val="Hyperlink"/>';
+    return rPr ? `<w:rPr>${rPr}</w:rPr>` : "";
+  }
+  function plainRun(text8, fmt) {
+    const run = `<w:r>${rPrXml(fmt)}<w:t xml:space="preserve">${esc(text8)}</w:t></w:r>`;
+    return fmt.link ? `<w:hyperlink r:id="${fmt.link}" w:history="1">${run}</w:hyperlink>` : run;
+  }
+  function textToRuns(text8, fmt) {
+    const parts = text8.split("\n");
+    let out = "";
+    for (let i2 = 0; i2 < parts.length; i2++) {
+      if (i2 > 0) out += `<w:r>${rPrXml(fmt)}<w:br/></w:r>`;
+      if (parts[i2]) out += plainRun(parts[i2], fmt);
+    }
+    return out;
+  }
+  function codeRun(text8, fmt) {
+    return plainRun(text8, { ...fmt, code: true });
+  }
+  function inlineChildren(children2, ctx, fmt = {}) {
+    return children2.map((c) => inlineToXml(c, ctx, fmt)).join("");
+  }
+  function inlineToXml(node2, ctx, fmt) {
+    switch (node2.type) {
+      case "text": {
+        let text8 = String(node2.value ?? "");
+        if (ctx.symbols) text8 = unguard(replaceSymbols(text8));
+        return textToRuns(text8, fmt);
+      }
+      case "strong":
+        return inlineChildren(node2.children, ctx, { ...fmt, b: true });
+      case "emphasis":
+        return inlineChildren(node2.children, ctx, { ...fmt, i: true });
+      case "delete":
+        return inlineChildren(node2.children, ctx, { ...fmt, strike: true });
+      case "inlineCode":
+        return codeRun(String(node2.value ?? ""), fmt);
+      case "link": {
+        const url = String(node2.url ?? "");
+        if (isExternal2(url)) {
+          const rId = `rId${ctx.nextRid++}`;
+          ctx.rels.push({ id: rId, type: "hyperlink", target: url, external: true });
+          return inlineChildren(node2.children, ctx, { ...fmt, link: rId });
+        }
+        return inlineChildren(node2.children, ctx, fmt);
+      }
+      case "image":
+        return imageToXml(node2, ctx, fmt);
+      case "break":
+        return `<w:r>${rPrXml(fmt)}<w:br/></w:r>`;
+      case "html":
+        return textToRuns(degradeHtml(String(node2.value ?? "")), fmt);
+      case "footnoteReference":
+        return textToRuns(`[^${String(node2.identifier ?? "")}]`, fmt);
+      default: {
+        const v = node2.value;
+        return typeof v === "string" ? textToRuns(v, fmt) : "";
+      }
+    }
+  }
+  function imageFallbackText(src, alt, ctx, fmt, warning) {
+    if (warning) ctx.warnings.push(warning);
+    return textToRuns(alt || src, fmt);
+  }
+  function imageToXml(node2, ctx, fmt) {
+    const src = String(node2.url ?? "");
+    const alt = String(node2.alt ?? "");
+    if (isExternal2(src)) return imageFallbackText(src, alt, ctx, fmt);
+    let data = ctx.files.get(src);
+    if (!data && ctx.entryDir) {
+      const resolved = resolveRef(ctx.entryDir, src);
+      if (resolved !== null) data = ctx.files.get(resolved);
+    }
+    if (!data) return imageFallbackText(src, alt, ctx, fmt);
+    const ext = src.split(".").pop()?.toLowerCase() ?? "";
+    if (ext === "svg") {
+      return imageFallbackText(src, alt, ctx, fmt, `SVG \u56FE\u7247\u4E0D\u5D4C\u5165 docx\uFF08v1 \u9650\u5236\uFF09\uFF0C\u5DF2\u7528 alt \u6587\u672C\u5360\u4F4D: ${src}`);
+    }
+    if (!BITMAP_EXT.has(ext)) {
+      return imageFallbackText(src, alt, ctx, fmt, `\u8D44\u6E90\u7C7B\u578B\u4E0D\u652F\u6301\u5D4C\u5165 docx: ${src}\uFF0C\u5DF2\u7528 alt \u6587\u672C\u5360\u4F4D`);
+    }
+    const id = ctx.media.length + 1;
+    const mediaPath = `word/media/img-${id}.${ext}`;
+    ctx.media.push({ path: mediaPath, data });
+    const rId = `rId${ctx.nextRid++}`;
+    ctx.rels.push({ id: rId, type: "image", target: mediaPath });
+    const w = ctx.imageWidthEmu;
+    const h = ctx.imageHeightEmu;
+    const docPrId = ctx.docPrId++;
+    const name = mediaPath.split("/").pop();
+    return `<w:r>${rPrXml(fmt)}<w:drawing>
+  <wp:inline distT="0" distB="0" distL="0" distR="0">
+    <wp:extent cx="${w}" cy="${h}"/>
+    <wp:docPr id="${docPrId}" name="${esc(name)}" descr="${esc(alt)}"/>
+    <a:graphic>
+      <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+        <pic:pic>
+          <pic:nvPicPr>
+            <pic:cNvPr id="${docPrId}" name="${esc(name)}" descr="${esc(alt)}"/>
+            <pic:cNvPicPr/>
+          </pic:nvPicPr>
+          <pic:blipFill>
+            <a:blip r:embed="${rId}"/>
+            <a:stretch><a:fillRect/></a:stretch>
+          </pic:blipFill>
+          <pic:spPr>
+            <a:xfrm><a:off x="0" y="0"/><a:ext cx="${w}" cy="${h}"/></a:xfrm>
+            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+          </pic:spPr>
+        </pic:pic>
+      </a:graphicData>
+    </a:graphic>
+  </wp:inline>
+</w:drawing></w:r>`;
+  }
+  function serializeList(node2, ctx, ilvl) {
+    const numId = node2.ordered ? 2 : 1;
+    const start = Number(node2.start) || 1;
+    let out = "";
+    (node2.children ?? []).forEach((item, idx) => {
+      const it = item;
+      if (it.type !== "listItem") return;
+      const checked = typeof it.checked === "boolean" ? it.checked ? "[x] " : "[ ] " : "";
+      const startOverride = idx === 0 && numId === 2 && start !== 1 ? `<w:startOverride w:val="${start}"/>` : "";
+      const numPr = `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/>${startOverride}</w:numPr>`;
+      let first = true;
+      for (const child of it.children ?? []) {
+        if (child.type === "list") {
+          out += serializeList(child, ctx, ilvl + 1);
+          continue;
+        }
+        out += blockToXml(child, ctx, { numPr, prefix: first ? checked : void 0 });
+        first = false;
+      }
+    });
+    return out;
+  }
+  function blockToXml(node2, ctx, extra) {
+    switch (node2.type) {
+      case "heading": {
+        const depth = Math.min(6, Math.max(1, Number(node2.depth) || 1));
+        return `<w:p><w:pPr><w:pStyle w:val="Heading${depth}"/></w:pPr>${inlineChildren(node2.children, ctx)}</w:p>`;
+      }
+      case "paragraph": {
+        const pStyle = extra?.style ?? (extra?.numPr ? "ListParagraph" : "");
+        const pPr = `${pStyle ? `<w:pStyle w:val="${pStyle}"/>` : ""}${extra?.numPr ?? ""}`;
+        const prefix = extra?.prefix ? plainRun(extra.prefix, {}) : "";
+        return `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ""}${prefix}${inlineChildren(node2.children, ctx)}</w:p>`;
+      }
+      case "code": {
+        const lines = String(node2.value ?? "").split("\n");
+        return lines.map((line) => `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:t xml:space="preserve">${esc(line)}</w:t></w:r></w:p>`).join("");
+      }
+      case "list":
+        return serializeList(node2, ctx, 0);
+      case "blockquote": {
+        return node2.children.map((c) => blockToXml(c, ctx, { style: "Quote" })).join("");
+      }
+      case "thematicBreak": {
+        return '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr></w:pPr></w:p>';
+      }
+      case "table":
+        return tableToXml(node2, ctx);
+      case "html":
+        return textToRuns(degradeHtml(String(node2.value ?? "")), {});
+      case "footnoteDefinition":
+        return "";
+      // 脚注定义不输出（引用已降级为 [^label] 文本）
+      default: {
+        const v = node2.value;
+        return typeof v === "string" && v ? `<w:p>${textToRuns(v, {})}</w:p>` : "";
+      }
+    }
+  }
+  function tableToXml(node2, ctx) {
+    const rows = (node2.children ?? []).filter((r) => r.type === "tableRow");
+    const colCount = Math.max(1, ...rows.map((r) => r.children?.length ?? 0));
+    const colW = Math.floor(9e3 / colCount);
+    let out = '<w:tbl><w:tblPr><w:tblStyle w:val="Table"/><w:tblW w:w="0" w:type="auto"/>';
+    out += "<w:tblBorders>" + ["top", "left", "bottom", "right", "insideH", "insideV"].map((b) => `<w:${b} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>`).join("") + "</w:tblBorders>";
+    out += '<w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/></w:tblPr>';
+    out += `<w:tblGrid>${'<w:gridCol w:w="' + colW + '"/>'.repeat(colCount)}</w:tblGrid>`;
+    rows.forEach((row, ri) => {
+      out += "<w:tr>";
+      row.children?.forEach((cell) => {
+        const isHeader = ri === 0;
+        out += "<w:tc><w:tcPr>";
+        out += `<w:tcW w:w="${colW}" w:type="dxa"/>`;
+        if (isHeader) out += '<w:shd w:val="clear" w:color="auto" w:fill="F2F2F2"/>';
+        out += "</w:tcPr>";
+        const blocks2 = cell.children ?? [];
+        out += blocks2.length === 0 ? "<w:p/>" : blocks2.map((b) => blockToXml(b, ctx, { style: "Table" })).join("");
+        out += "</w:tc>";
+      });
+      out += "</w:tr>";
+    });
+    return out + "</w:tbl>";
+  }
+  var EXT_CONTENT_TYPE = /* @__PURE__ */ new Map([
+    ["rels", "application/vnd.openxmlformats-package.relationships+xml"],
+    ["xml", "application/xml"],
+    ["png", "image/png"],
+    ["jpg", "image/jpeg"],
+    ["jpeg", "image/jpeg"],
+    ["gif", "image/gif"],
+    ["webp", "image/webp"]
+  ]);
+  function contentTypesXml(ctx) {
+    const usedExt = new Set(ctx.media.map((m) => m.path.split(".").pop().toLowerCase()));
+    const defaults = ["rels", "xml", ...usedExt].map((ext) => {
+      const ct = EXT_CONTENT_TYPE.get(ext) ?? "application/octet-stream";
+      return `<Default Extension="${ext}" ContentType="${ct}"/>`;
+    }).join("");
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+${defaults}
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+</Types>`;
+  }
+  function documentXml(bodyXml) {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${NS.w}" xmlns:r="${NS.r}" xmlns:wp="${NS.wp}" xmlns:a="${NS.a}" xmlns:pic="${NS.pic}">
+<w:body>
+${bodyXml}
+<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>
+</w:body>
+</w:document>`;
+  }
+  var REL_TYPE_URI = /* @__PURE__ */ new Map([
+    ["styles", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"],
+    ["numbering", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"],
+    ["image", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"]
+  ]);
+  function documentRelsXml(ctx) {
+    const rels = [
+      { id: "rId1", type: "styles", target: "styles.xml" },
+      { id: "rId2", type: "numbering", target: "numbering.xml" },
+      ...ctx.rels
+    ];
+    const items = rels.map((r) => {
+      const type = REL_TYPE_URI.get(r.type) ?? "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+      const mode = r.external ? ' TargetMode="External"' : "";
+      return `<Relationship Id="${r.id}" Type="${type}" Target="${esc(r.target)}"${mode}/>`;
+    }).join("");
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+${items}
+</Relationships>`;
+  }
+  var ROOT_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+  var STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="${NS.w}">
+<w:docDefaults>
+<w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="\u5B8B\u4F53"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>
+<w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="360" w:lineRule="auto"/></w:pPr></w:pPrDefault>
+</w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="3"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading5"><w:name w:val="heading 5"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="4"/></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading6"><w:name w:val="heading 6"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="5"/></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:ind w:left="720"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:ind w:left="720" w:right="360"/><w:spacing w:before="120" w:after="120"/></w:pPr><w:rPr><w:i/><w:color w:val="595959"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Table"><w:name w:val="Table"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="CodeBlock"><w:name w:val="Code Block"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/><w:ind w:left="360"/><w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/></w:pPr><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:basedOn w:val="DefaultParagraphFont"/><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr></w:style>
+</w:styles>`;
+  var NUMBERING_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="${NS.w}">
+<w:abstractNum w:abstractNumId="0">
+<w:multiLevelType w:val="hybridMultilevel"/>
+${[0, 1, 2, 3, 4, 5, 6, 7].map((lvl) => {
+    const bullet = ["\u2022", "\u25E6", "\u25AA", "\u2022", "\u25E6", "\u25AA", "\u2022", "\u25E6"][lvl];
+    const left = 720 + lvl * 720;
+    return `<w:lvl w:ilvl="${lvl}"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="${bullet}"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${left}" w:hanging="360"/></w:pPr></w:lvl>`;
+  }).join("")}
+</w:abstractNum>
+<w:abstractNum w:abstractNumId="1">
+<w:multiLevelType w:val="hybridMultilevel"/>
+${[0, 1, 2, 3, 4, 5, 6, 7].map((lvl) => {
+    const lvlText = Array.from({ length: lvl + 1 }, (_, i2) => `%${i2 + 1}`).join(".") + ".";
+    const left = 720 + lvl * 720;
+    return `<w:lvl w:ilvl="${lvl}"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="${lvlText}"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${left}" w:hanging="360"/></w:pPr></w:lvl>`;
+  }).join("")}
+</w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
+</w:numbering>`;
+  function toDocx(files, opts = {}, onWarning) {
+    const manifestRaw = files.get("manifest.json");
+    let manifest;
+    try {
+      manifest = manifestRaw ? JSON.parse(new TextDecoder().decode(manifestRaw)) : {};
+    } catch (e) {
+      throw new MdeError(E.E302, `manifest.json \u4E0D\u662F\u5408\u6CD5 JSON: ${e.message}`);
+    }
+    const hasManifest = manifestRaw !== void 0;
+    const entry = hasManifest && manifest.entrypoint ? manifest.entrypoint : inferEntrypoint(files);
+    assertMarkdownEntrypoint(entry);
+    if (hasManifest) assertSupported(manifest);
+    const body3 = files.get(entry);
+    if (!body3) throw new MdeError(E.E303, `entrypoint \u4E0D\u5B58\u5728: ${entry}`);
+    const i2 = entry.lastIndexOf("/");
+    const entryDir = i2 === -1 ? "" : entry.slice(0, i2);
+    const raw2 = new TextDecoder().decode(body3);
+    let expanded = manifest.extensions?.include === false ? raw2 : expand(files, entry).text;
+    expanded = expanded.replace(/^(\s*)<<</gm, "$1&lt;&lt;&lt;");
+    const tree = unified().use(remarkParse).use(remarkGfm).parse(guardEscapes(expanded));
+    const ctx = {
+      files,
+      entryDir,
+      symbols: opts.symbols !== false && manifest.extensions?.symbols !== "off",
+      imageWidthEmu: opts.imageWidthEmu ?? DEFAULT_IMAGE_WIDTH_EMU,
+      imageHeightEmu: opts.imageHeightEmu ?? DEFAULT_IMAGE_HEIGHT_EMU,
+      media: [],
+      rels: [],
+      warnings: [],
+      nextRid: 3,
+      // rId1=styles、rId2=numbering 已占用
+      docPrId: 1
+    };
+    const bodyXml = tree.children?.map((c) => blockToXml(c, ctx)).join("") ?? "";
+    const enc = (s) => new TextEncoder().encode(s);
+    const out = /* @__PURE__ */ new Map();
+    out.set("[Content_Types].xml", enc(contentTypesXml(ctx)));
+    out.set("_rels/.rels", enc(ROOT_RELS_XML));
+    out.set("word/document.xml", enc(documentXml(bodyXml)));
+    out.set("word/_rels/document.xml.rels", enc(documentRelsXml(ctx)));
+    out.set("word/styles.xml", enc(STYLES_XML));
+    out.set("word/numbering.xml", enc(NUMBERING_XML));
+    for (const m of ctx.media) out.set(m.path, m.data);
+    const bytes = packRaw(out);
+    if (onWarning) for (const w of ctx.warnings) onWarning(w);
+    return bytes;
+  }
+
+  // src/zip-export.ts
+  function defaultReadme(entry, count) {
+    return `# \u6587\u6863\u5305\u8BF4\u660E
+
+\u672C\u76EE\u5F55\u7531 mdpkg \u5BFC\u51FA\uFF08zip \u4EA4\u4ED8\u5F62\u6001\uFF09\uFF0C\u5185\u5BB9\u4E0E\u6E90\u5305\u4E00\u81F4\uFF1Ainclude \u5DF2\u5C55\u5F00\u3001\u76F8\u5BF9\u8DEF\u5F84\u5DF2\u6309\u5305\u6839\u91CD\u5199\uFF0CMarkdown \u6587\u672C\u672A\u4F5C\u5176\u5B83\u6539\u52A8\u3002
+
+- \u5165\u53E3\u6587\u6863\uFF1A${entry}
+- \u5185\u5BB9\u6784\u6210\uFF1A${count} \u4E2A\u6587\u4EF6\uFF08Markdown \u6587\u6863\u4E0E\u56FE\u7247\u7B49\u8D44\u6E90\uFF09
+- \u6253\u5F00\u65B9\u5F0F\uFF1A\u7528\u4EFB\u610F Markdown \u9605\u8BFB\u5668\u6216\u7F16\u8F91\u5668\u6253\u5F00\u5165\u53E3\u6587\u6863\u5373\u53EF\uFF1B\u56FE\u7247\u7B49\u8D44\u6E90\u5DF2\u968F\u76EE\u5F55\u643A\u5E26\uFF0C\u65E0\u9700\u8054\u7F51\u3002
+
+\u5982\u9700\u91CD\u65B0\u6253\u5305\u4E3A .mdpkg \u5355\u6587\u4EF6\uFF0C\u53EF\u5B89\u88C5 mdpkg \u540E\u6267\u884C\uFF1Amdpkg pack . -o out.mdpkg
+`;
+  }
+  function buildZipExport(pkg, opts) {
+    const manifestRaw = pkg.get("manifest.json");
+    let entry;
+    if (manifestRaw !== void 0) {
+      let manifest;
+      try {
+        manifest = JSON.parse(new TextDecoder().decode(manifestRaw));
+      } catch (e) {
+        throw new MdeError(E.E302, `manifest.json \u4E0D\u662F\u5408\u6CD5 JSON: ${e.message}`);
+      }
+      entry = manifest.entrypoint ?? inferEntrypoint(pkg);
+    } else {
+      entry = inferEntrypoint(pkg);
+    }
+    if (!pkg.has(entry)) throw new MdeError(E.E303, `entrypoint \u4E0D\u5B58\u5728: ${entry}`);
+    const out = /* @__PURE__ */ new Map();
+    for (const [p2, data] of pkg) {
+      if (p2 === "manifest.json" || p2 === entry) continue;
+      out.set(p2, data);
+    }
+    const { text: text8 } = expand(pkg, entry);
+    out.set(entry, new TextEncoder().encode(text8));
+    if (!out.has("README.md")) {
+      out.set("README.md", new TextEncoder().encode(opts?.readme ?? defaultReadme(entry, out.size)));
+    }
+    return packRaw(out);
+  }
+
   // web/mdpkg-web.ts
-  async function openMdpkg(bytes, opts = {}) {
-    const files = await unpack(bytes);
-    if (files.size === 0) throw new MdeError(E.E101, "\u4E0D\u662F\u6709\u6548\u7684 ZIP \u5305\uFF080 \u4E2A\u6761\u76EE\uFF09");
+  function renderMap(files, opts) {
+    const r = render(files, { inline: true, symbols: opts.symbols, include: opts.include });
+    return { html: r.html, degraded: r.degraded };
+  }
+  function renderPackage(files, opts) {
     let manifest = null;
     const manifestRaw = files.get("manifest.json");
     if (manifestRaw) {
@@ -23244,18 +23797,28 @@ ${bodyHtml}
         manifest = null;
       }
     }
+    const unverified = manifestRaw === void 0;
     const validation = validatePackage(files);
+    const hasManifest = manifestRaw !== void 0;
+    const resolvedEntry = hasManifest && manifest?.entrypoint ? manifest.entrypoint : (() => {
+      try {
+        return inferEntrypoint(files);
+      } catch {
+        return "";
+      }
+    })();
     try {
-      const r = render(files, { inline: true, symbols: opts.symbols });
-      const entry = manifest?.entrypoint ?? DEFAULT_ENTRYPOINT;
-      const title = entry.split("/").pop() ?? entry;
+      const r = renderMap(files, { symbols: opts.symbols, include: opts.include });
+      const title = resolvedEntry.split("/").pop() ?? resolvedEntry;
       return {
         files,
         manifest,
         validation,
         html: wrapDocument(title, r.html),
         degraded: r.degraded,
-        error: null
+        error: null,
+        unverified,
+        entry: resolvedEntry
       };
     } catch (e) {
       return {
@@ -23264,9 +23827,40 @@ ${bodyHtml}
         validation,
         html: null,
         degraded: false,
-        error: e instanceof MdeError ? e.message : String(e)
+        error: e instanceof MdeError ? e.message : String(e),
+        unverified,
+        entry: resolvedEntry
       };
     }
+  }
+  async function openMdpkg(bytes, opts = {}) {
+    const files = await unpack(bytes);
+    if (files.size === 0) throw new MdeError(E.E101, "\u4E0D\u662F\u6709\u6548\u7684 ZIP \u5305\uFF080 \u4E2A\u6761\u76EE\uFF09");
+    return renderPackage(files, opts);
+  }
+  async function openFiles(files, opts) {
+    return renderPackage(files, opts ?? {});
+  }
+  async function openMarkdown(name, bytes, opts = {}) {
+    const entry = /\.md$/i.test(name) ? name : "document.md";
+    const files = /* @__PURE__ */ new Map([[entry, bytes]]);
+    return openFiles(files, { ...opts, include: false });
+  }
+  function toHtml2(files, opts) {
+    const manifestRaw = files.get("manifest.json");
+    let manifest = null;
+    if (manifestRaw) {
+      try {
+        manifest = JSON.parse(new TextDecoder().decode(manifestRaw));
+      } catch {
+        manifest = null;
+      }
+    }
+    const hasManifest = manifestRaw !== void 0;
+    const entry = hasManifest && manifest?.entrypoint ? manifest.entrypoint : inferEntrypoint(files);
+    const r = renderMap(files, { symbols: opts?.symbols });
+    const title = entry.split("/").pop() ?? entry;
+    return wrapDocument(title, r.html);
   }
   function readEntrySource(files, entry = DEFAULT_ENTRYPOINT) {
     const body3 = files.get(entry);
@@ -23287,7 +23881,7 @@ ${bodyHtml}
     const prev = prevManifest ?? readManifest(work);
     work.delete("manifest.json");
     const manifest = buildManifest(work, prev);
-    const entry = manifest.entrypoint ?? DEFAULT_ENTRYPOINT;
+    const entry = manifest.entrypoint ?? inferEntrypoint(work);
     checkClosure(work, entry);
     return pack(work, manifest);
   }

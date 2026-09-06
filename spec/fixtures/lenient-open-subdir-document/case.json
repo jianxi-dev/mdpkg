@@ -1,0 +1,11 @@
+{
+  "id": "lenient-open-subdir-document",
+  "title": "宽容打开：document.md 全树优先于根目录 README.md",
+  "kind": "render",
+  "lenient": true,
+  "expect": {
+    "htmlContains": [
+      "子目录文档"
+    ]
+  }
+}

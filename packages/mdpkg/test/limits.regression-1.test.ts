@@ -91,11 +91,9 @@ function forgeZip(entries: { name: string; data: Uint8Array; origSize?: number }
   return out;
 }
 
-// skip 原因（2026-09-05 /ship 实测）：fflate Unzip 单次 push 递归解析在 ~2108 条目处静默截断（无报错、无 reject），
-// 10_001 条目的包只解出 2108 个——E602 保护（LIMITS.entries=10_000）永远无法先于 fflate 截断触发。
-// 更大影响：>2108 条目的合法包会被静默丢失内容（数据完整性 bug，已登记 issue，待 unpack 分块 push 修复后启用本测试）。
-// 诊断证据：unpack(zipSync(10001×1B)) → resolve 且 size=2108
-test.skip('E602: 条目总数超过 10_000 上限被拒绝', async () => {
+// 2026-09-05 修复：unpack 改为分块 push（chunkZIP，每块 ≤1000 条目），fflate 递归深度不再超限。
+// 10_001 条目全部被解析后，第 10_001 个触发 LIMITS.entries=10_000 → E602。
+test('E602: 条目总数超过 10_000 上限被拒绝', async () => {
   // 真实 10_001 个 1 字节条目（zipSync 直接生成，可靠）
   const map: Record<string, Uint8Array> = {};
   for (let i = 0; i < 10_001; i++) map[`f${i}.md`] = new Uint8Array([120]);
@@ -113,10 +111,9 @@ test('E603: 单文件解压后超过 200MB 上限被拒绝', async () => {
   await assert.rejects(() => unpack(forged), (e: unknown) => e instanceof MdeError && e.message.includes('MDPKG-E603'));
 });
 
-// skip 原因（2026-09-05 /ship 实测）：伪造 uncompSize 的 store 包被 fflate 用伪造值做后续条目偏移解析，
-// 丢最后 1-2 个条目（6 条剩 5、7 条剩 6、8 条剩 6），total 恒达不到 1GB；真实 1GB 数据构造不可行。
-// 与 E602 同一 root cause（fflate Unzip 解析限制），待 unpack 修复后启用。
-test.skip('E604: 总解压量超过 1GB 上限被拒绝', async () => {
+// 2026-09-05 修复：分块 push 后，7 个伪造条目全部被解析，total = 7×150MB = 1050MB > 1GB → E604 触发。
+// 实测：2 条目伪造包（每 100MB）解出 2 条完整内容，无截断。
+test('E604: 总解压量超过 1GB 上限被拒绝', async () => {
   // 7 个条目各 150MB（每个 < 200MB 单文件上限），总和 1050MB > 1GB
   // compSize = 200KB 使压缩比 ≈ 750:1 < 1000:1（避开 E605 先触发）
   const entries = Array.from({ length: 7 }, (_, i) => ({

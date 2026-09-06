@@ -1,10 +1,14 @@
 // 文件包含：解析前展开（规范 §7.2）
 // 触发规则：仅在列 0 且整行匹配 INCLUDE_RE 时触发。不感知代码块——解析前无 AST，
 // 判断围栏需自研 Markdown 扫描器，必然导致实现分叉（已知局限：列 0 围栏内的指令会被展开）。
-// 相对基准：被包含文件 P 中的相对引用 R 重写为 normalize(dirname(P) + '/' + R)，
+// 相对基准：入口文档引用是「相对包根」语义（收集键与引用一致，精确查即可命中），
+// 因此入口文档的非指令行不重写；仅被包含文件 P 中的相对引用 R 重写为 resolveRef(dirname(P), R)（D7），
 // 使展开后文本自洽，render 与 export --expanded 共用同一中间产物。
+// 引用文本按文档目录语义解析（可含 .. 段），与条目路径校验（normalizePath）分离——
+// 越出包根的引用保留原文，不再触发 E202。
 import { MdeError, E } from './errors.ts';
 import { normalizePath } from './zip-core.ts';
+import { resolveRef } from './refpath.ts';
 
 export const INCLUDE_RE = /^<<<\s*(.+?)\s*$/;
 export const INCLUDE_LIMITS = { depth: 32, maxBytes: 10 * 1024 * 1024, maxCount: 1000 };
@@ -24,8 +28,10 @@ function rewriteLine(line: string, baseDir: string): string {
   return line.replace(/\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g, (whole, raw: string) => {
     if (isUrl(raw) || raw.startsWith('#') || raw.startsWith('/')) return whole;
     const [pathPart, ...rest] = raw.split(/(?=[?#])/);
-    const rewritten = normalizePath(`${baseDir}/${pathPart}`);
-    return `](${rewritten}${rest.join('')})`;
+    // 引用文本按被包含文件目录语义解析（D7）：越出包根（null）保留原文，不再触发 E202
+    const resolved = resolveRef(baseDir, pathPart);
+    if (resolved === null) return whole;
+    return `](${resolved}${rest.join('')})`;
   });
 }
 
@@ -36,7 +42,7 @@ function dirname(path: string): string {
 
 interface State { count: number; bytes: number; sources: { file: string; line: number }[]; out: string[] }
 
-function expandFile(files: Map<string, Uint8Array>, path: string, depth: number, stack: string[], st: State): void {
+function expandFile(files: Map<string, Uint8Array>, path: string, depth: number, stack: string[], st: State, isEntry = false): void {
   if (depth > INCLUDE_LIMITS.depth) throw new MdeError(E.E504, `include 深度超过 ${INCLUDE_LIMITS.depth}（栈: ${stack.join(' → ')}）`);
   if (stack.includes(path)) throw new MdeError(E.E507, `检测到循环包含: ${[...stack, path].join(' → ')}`);
   const data = files.get(path);
@@ -61,10 +67,11 @@ function expandFile(files: Map<string, Uint8Array>, path: string, depth: number,
       catch { throw new MdeError(E.E501, `include 目标在包外: ${target}`); }
       if (!norm.toLowerCase().endsWith('.md')) throw new MdeError(E.E503, `include 目标非 Markdown: ${norm}`);
       if (++st.count > INCLUDE_LIMITS.maxCount) throw new MdeError(E.E506, `include 次数超过 ${INCLUDE_LIMITS.maxCount}`);
-      expandFile(files, norm, depth + 1, stack, st);
+      expandFile(files, norm, depth + 1, stack, st, false);
       return;
     }
-    st.out.push(inFence ? raw : rewriteLine(raw, base));
+    // 入口文档引用是相对包根语义（收集键与引用一致），不重写；仅被包含文件按自身目录重写
+    st.out.push(isEntry || inFence ? raw : rewriteLine(raw, base));
     st.sources.push({ file: path, line: idx + 1 });
     st.bytes += raw.length + 1;
     if (st.bytes > INCLUDE_LIMITS.maxBytes) throw new MdeError(E.E505, `展开后超过 ${INCLUDE_LIMITS.maxBytes / 1048576}MB`);
@@ -74,6 +81,6 @@ function expandFile(files: Map<string, Uint8Array>, path: string, depth: number,
 
 export function expand(files: Map<string, Uint8Array>, entry: string): ExpandResult {
   const st: State = { count: 0, bytes: 0, sources: [], out: [] };
-  expandFile(files, entry, 1, [], st);
+  expandFile(files, entry, 1, [], st, true);
   return { text: st.out.join('\n'), sources: st.sources, count: st.count };
 }

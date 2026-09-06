@@ -66,11 +66,14 @@ test('openMdpkg: 校验失败仍可预览（返回 validation.errors，不阻断
   assert.ok(r.html, '校验失败也应产出预览（内容仍在）');
 });
 
-test('openMdpkg: 入口缺失报渲染错误', async () => {
+test('openMdpkg: 无 entrypoint 时推断渲染（lenient-open）', async () => {
   const files = new Map<string, Uint8Array>([['other.md', enc.encode('# 无入口\n')]]);
   const bytes = pack(files, buildManifest(files));
   const r = await openMdpkg(bytes);
-  assert.ok(r.error?.includes('entrypoint 不存在'), '入口缺失应在渲染阶段报错');
+  // lenient-open：manifest 无 entrypoint 时推断 other.md 为入口，渲染成功
+  assert.equal(r.error, null, '推断模式下不应报错');
+  assert.ok(r.html?.includes('无入口'), '应渲染推断的 other.md');
+  assert.equal(r.unverified, false, '有 manifest 时 unverified 为 false');
 });
 
 test('openMdpkg: 非 ZIP 字节直接抛 MdeError', async () => {

@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.2.0.0] - 2026-09-05
+
+### Added
+
+- **docx 导出**：`render --format docx` / 浏览器 `toDocx`——自研最小 OOXML 写入器，位图资源嵌入 `word/media/`，SVG 降级为 alt 文本 + 警告；可被 Word / LibreOffice / WPS / Pages 直接打开。
+- **zip 交付物导出**：`export --zip` / 浏览器 `toZip`——展开后 Markdown + 全部资源 + README 的标准 zip（无 manifest，交付给普通用户）。
+- **md 导出**：`export --md` / 浏览器 `toMarkdown`——展开后入口文档单文件（include 内联、路径重写、符号保持源文本）。
+- **html 导出 API**：浏览器 `toHtml`——自包含单文件 HTML（与 `openMdpkg().html` 同源）。
+- **文件夹/多条目直开**：浏览器拖入文件夹（含同级附件，图片内联显示）或 md+附件多选；`openFiles` 统一 Map 渲染入口；`openMarkdown` 单 .md 直开。
+- **相对引用解析**：`../assets/a.png` 与 `./` 引用按文档目录语义解析（含中文路径），渲染与校验（checkClosure）一致。
+- **demo 导出栏**：打开包后四格式导出按钮（.md / .mdpkg / .html / .zip）+ 打印 / 另存为 PDF（`window.print()` 兜底）。
+
+### Fixed
+
+- **入口引用双重前缀**：入口文档引用不再按文档目录重复拼接（带顶层文件夹名的引用如 `ima笔记使用指南/attachment/1.gif` 可正确匹配）。
+- **packMdpkg 入口推断**：lenient / 单 md 包重打包不再报 E303（回退 `inferEntrypoint`）。
+- **中文路径 percent-encode**：渲染时解码非 ASCII 路径（remark-rehype 编码还原）。
+
+## [0.1.1.0] - 2026-09-05
+
+### Added
+
+- **lenient-open：打开普通 ZIP 文档**——`render` / `export` / 浏览器 `openMdpkg` 接受无 `manifest.json` 的 zip（`.zip` 与 `.mdpkg` 同等对待）。入口按确定性规则推断：`document.md`（任意深度取最浅）> `README.md` > `README.zh-CN.md` > 根目录字典序首个 `.md`。
+- **未校验来源标注**：宽容打开的包在 CLI stderr 提示、浏览器 API 返回 `unverified: true` 与 `entry`（实际采用入口）；`demo.html` 显示「未校验」徽标与推断入口提示。
+- **5 个 lenient-open conformance fixtures**（入口推断、E303/E102 边界）。
+
+### Fixed
+
+- **unpack/list 静默截断根治**（数据完整性）：超过约 2108 条目的包此前会被 fflate 递归解析限制静默丢弃内容（issue #1）——改为按 local header 边界分块 push 后，任意条目数完整解包；E602（1 万条）/E604（1GB）限额保护恢复可达。
+- **web 端标题与入口一致**：lenient 包不再显示错误的 `document.md` 标题，与推断入口对齐。
+- `export --raw` 对无 Markdown 的裸 zip 保持可用（不因入口推断报错）。
+
+### Changed
+
+- 测试套件 108 → **136**（分块边界、lenient、限额回归）；浏览器 bundle 重建（分块 + lenient 更新进入 mdpkg-web）。
+
+---
+
 ## [0.1.0.0] - 2026-09-05
 
 ### Added

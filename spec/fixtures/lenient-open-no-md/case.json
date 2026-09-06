@@ -1,0 +1,9 @@
+{
+  "id": "lenient-open-no-md",
+  "title": "宽容打开：无任何 Markdown 文件时推断失败报 E303",
+  "kind": "render",
+  "lenient": true,
+  "expect": {
+    "errorCode": "MDPKG-E303"
+  }
+}

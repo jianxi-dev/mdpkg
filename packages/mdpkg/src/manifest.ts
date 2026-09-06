@@ -5,6 +5,7 @@ import { sha256 as sha256Hex } from 'js-sha256'; // 零依赖同步 SHA-256，�
 import Ajv2020 from 'ajv/dist/2020.js'; // ajv 8 默认只含 draft-07/2019-09；Schema 用 2020-12 必须走此入口（ESM 需带 .js）
 import { MdeError, E } from './errors.ts';
 import { normalizePath } from './zip-core.ts';
+import { resolveRef } from './refpath.ts';
 import schema from '../../../spec/schema/manifest-1.0.json' with { type: 'json' };
 import { expand } from './include.ts';
 import { unified } from 'unified';
@@ -13,6 +14,38 @@ import { visit } from 'unist-util-visit';
 
 export const SPEC_VERSION = '1.0';
 export const DEFAULT_ENTRYPOINT = 'document.md';
+
+/**
+ * 推断入口（lenient-open spec「入口推断规则」）。
+ * 无 manifest.json 时按确定性规则选 entrypoint：
+ *   document.md > README.md > README.zh-CN.md > 其余 .md 最浅优先（同深度码位序）。
+ * 候选排除含隐藏段（任一路径段以 . 开头）的路径；无 .md 抛 E303。
+ */
+export function inferEntrypoint(files: Map<string, Uint8Array>): string {
+  const candidates = [...files.keys()].filter((p) => {
+    if (!p.toLowerCase().endsWith('.md')) return false;
+    if (p.split('/').some((seg) => seg.startsWith('.'))) return false; // 排除隐藏路径
+    return true;
+  });
+
+  if (candidates.length === 0) {
+    throw new MdeError(E.E303, 'entrypoint 不存在（推断失败）: 无 Markdown 文件');
+  }
+
+  const depth = (p: string) => p.split('/').length;
+  const shallowest = (paths: string[]) =>
+    [...paths].sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : a > b ? 1 : 0));
+
+  // 默认名全树查找（按文件名匹配，取最浅；同深度取码位先序）
+  for (const name of ['document.md', 'README.md', 'README.zh-CN.md']) {
+    const matches = candidates.filter((p) => p.split('/').pop() === name);
+    if (matches.length > 0) return shallowest(matches)[0];
+  }
+
+  // 兜底：全部候选（任意深度）取最浅；同深度按码位字典序（与默认名查找同一语义）。
+  // 候选非空即可推断（E303 仅在无任何 .md 时抛出），子目录任意名 md 同样可作入口。
+  return shallowest(candidates)[0];
+}
 
 const MEDIA: Record<string, string> = {
   md: 'text/markdown', markdown: 'text/markdown', json: 'application/json',
@@ -104,7 +137,13 @@ export function collectReferences(md: string, baseDir = ''): { local: string[]; 
     // 到本地 Markdown 的链接是「文档间导航」而非附件，不强制打包——
     // 否则打包一篇 README 会连带要求整个仓库。图片与 pdf/zip 等嵌入附件才必须随包。
     if (node.type === 'link' && /\.md$/i.test(p)) { docLinks++; return; }
-    local.push(normalizePath(baseDir ? `${baseDir}/${p}` : p));
+    try {
+      local.push(normalizePath(baseDir ? `${baseDir}/${p}` : p));
+    } catch {
+      // 引用文本含 .. 段（D7：引用按文档目录语义解析，与条目路径校验分离）：
+      // 保留原文，由 checkClosure 的 resolveRef 回退解析；越出包根时按缺失处理
+      local.push(baseDir ? `${baseDir}/${p}` : p);
+    }
   });
   return { local, external, docLinks };
 }
@@ -121,12 +160,31 @@ export function checkClosure(files: Map<string, Uint8Array>, entrypoint: string)
   const { text, sources } = expand(files, entrypoint);
   const { local } = collectReferences(text);
   const present = new Set([...files.keys()].map((p) => normalizePath(p)));
+  // 入口文档所在目录（D7 相对引用解析基准；'' = 包根）
+  const i = entrypoint.lastIndexOf('/');
+  const entryDir = i === -1 ? '' : entrypoint.slice(0, i);
+
+  // 引用匹配：先精确（引用文本即包内路径，如入口引用已含顶层目录名），
+  // 未命中按入口文档目录语义 resolveRef 回退（与渲染 assetsPlugin 同一 resolveRef）。
+  // 引用文本可含 .. 段（normalizePath 拒绝），此时直接走回退。
+  const resolveHit = (ref: string): string | null => {
+    let norm: string | null = null;
+    try { norm = normalizePath(ref); } catch { /* 含 .. 段：走 resolveRef 回退 */ }
+    if (norm !== null && present.has(norm)) return norm;
+    const resolved = resolveRef(entryDir, ref);
+    if (resolved === null) return null;
+    try { norm = normalizePath(resolved); } catch { return null; }
+    return present.has(norm) ? norm : null;
+  };
 
   for (const ref of new Set(local)) {
-    const target = normalizePath(ref);
-    if (!present.has(target)) throw new MdeError(E.E401, `引用的本地资源缺失: ${ref}（入口 ${entrypoint}）`);
+    if (resolveHit(ref) === null) throw new MdeError(E.E401, `引用的本地资源缺失: ${ref}（入口 ${entrypoint}）`);
   }
-  const referenced = new Set(local.map((r) => normalizePath(r)));
+  const referenced = new Set<string>();
+  for (const r of local) {
+    const hit = resolveHit(r);
+    if (hit !== null) referenced.add(hit);
+  }
   referenced.add(normalizePath(entrypoint));
   for (const s of sources) referenced.add(normalizePath(s.file)); // 被包含文件不算孤儿
   return { orphans: [...present].filter((p) => !referenced.has(p) && p !== 'manifest.json') };
