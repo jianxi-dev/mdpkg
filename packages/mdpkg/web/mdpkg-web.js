@@ -23350,6 +23350,93 @@ function toMarkdown(files, opts = {}) {
   return includeEnabled ? expand(files, entry).text : new TextDecoder().decode(body3);
 }
 
+// src/image-size.ts
+function readImageSize(data) {
+  if (pngSize(data) != null) return pngSize(data);
+  if (jpegSize(data) != null) return jpegSize(data);
+  if (gifSize(data) != null) return gifSize(data);
+  if (webpSize(data) != null) return webpSize(data);
+  return null;
+}
+function pngSize(data) {
+  if (data.length < 24) return null;
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i2 = 0; i2 < 8; i2++) {
+    if (data[i2] !== sig[i2]) return null;
+  }
+  return {
+    width: readU32BE(data, 16),
+    height: readU32BE(data, 20)
+  };
+}
+function jpegSize(data) {
+  if (data.length < 4 || data[0] !== 255 || data[1] !== 216) return null;
+  let offset = 2;
+  while (offset + 9 <= data.length) {
+    if (data[offset] !== 255) {
+      offset++;
+      continue;
+    }
+    const marker = data[offset + 1];
+    if (marker === 192 || marker === 193 || marker === 194) {
+      const height = readU16BE(data, offset + 5);
+      const width = readU16BE(data, offset + 7);
+      return { width, height };
+    }
+    if (offset + 3 >= data.length) break;
+    const segLen = readU16BE(data, offset + 2);
+    offset += 2 + segLen;
+  }
+  return null;
+}
+function gifSize(data) {
+  if (data.length < 10) return null;
+  const sig = [71, 73, 70, 56];
+  for (let i2 = 0; i2 < 4; i2++) {
+    if (data[i2] !== sig[i2]) return null;
+  }
+  return {
+    width: readU16LE(data, 6),
+    height: readU16LE(data, 8)
+  };
+}
+function webpSize(data) {
+  if (data.length < 16) return null;
+  if (data[0] !== 82 || data[1] !== 73 || data[2] !== 70 || data[3] !== 70) return null;
+  if (data[8] !== 87 || data[9] !== 69 || data[10] !== 66 || data[11] !== 80) return null;
+  if (data.length >= 30 && data[12] === 86 && data[13] === 80 && data[14] === 56 && data[15] === 88) {
+    const width = (data[24] | data[25] << 8 | data[26] << 16) + 1;
+    const height = (data[27] | data[28] << 8 | data[29] << 16) + 1;
+    return { width, height };
+  }
+  if (data[12] === 86 && data[13] === 80 && data[14] === 56 && data[15] === 32) {
+    if (data.length < 30) return null;
+    const width = readU16LE(data, 26) & 16383;
+    const height = readU16LE(data, 28) & 16383;
+    return { width, height };
+  }
+  if (data[12] === 86 && data[13] === 80 && data[14] === 56 && data[15] === 76) {
+    if (data.length < 25) return null;
+    const b0 = data[21];
+    const b1 = data[22];
+    const b22 = data[23];
+    const b3 = data[24];
+    const width = 1 + ((b1 & 63) << 8 | b0);
+    const height = 1 + (b3 << 6 | (b22 & 240) >> 4 | (b1 & 192) >> 2);
+    return { width, height };
+  }
+  return null;
+}
+function readU32BE(data, offset) {
+  return (data[offset] << 24 | data[offset + 1] << 16 | data[offset + 2] << 8 | data[offset + 3]) >>> 0;
+}
+function readU16BE(data, offset) {
+  return data[offset] << 8 | data[offset + 1];
+}
+function readU16LE(data, offset) {
+  return data[offset] | data[offset + 1] << 8;
+}
+
 // src/docx.ts
 var NS = {
   w: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -23397,8 +23484,103 @@ function textToRuns(text8, fmt) {
 function codeRun(text8, fmt) {
   return plainRun(text8, { ...fmt, code: true });
 }
+function extractMath(tree) {
+  const processBlock = (node2) => {
+    if (!node2.children) return;
+    if (node2.type === "code" || node2.type === "table" || node2.type === "inlineCode") return;
+    if (node2.type === "paragraph" || node2.type === "heading") {
+      splitMathInInline(node2);
+    }
+    for (const child of node2.children) {
+      const c = child;
+      if (c.children) processBlock(c);
+    }
+  };
+  processBlock(tree);
+}
+function splitMathInInline(node2) {
+  const newChildren = [];
+  for (const child of node2.children) {
+    const n = child;
+    if (n.type !== "text" || typeof n.value !== "string") {
+      newChildren.push(child);
+      continue;
+    }
+    const text8 = n.value;
+    const regex = /\$\$([\s\S]+?)\$\$|\$([^\s$][^$]*?)\$/g;
+    let lastIndex = 0;
+    let match;
+    let hasMatch = false;
+    while ((match = regex.exec(text8)) !== null) {
+      hasMatch = true;
+      const start = match.index;
+      const end = start + match[0].length;
+      if (start > lastIndex) {
+        newChildren.push({ type: "text", value: text8.slice(lastIndex, start) });
+      }
+      if (match[1] !== void 0) {
+        newChildren.push({ type: "math", value: match[1], display: true });
+      } else if (match[2] !== void 0) {
+        newChildren.push({ type: "math", value: match[2], display: false });
+      }
+      lastIndex = end;
+    }
+    if (!hasMatch) {
+      newChildren.push(child);
+    } else if (lastIndex < text8.length) {
+      newChildren.push({ type: "text", value: text8.slice(lastIndex) });
+    }
+  }
+  node2.children = newChildren;
+}
+var CALLOUT_TYPES = /* @__PURE__ */ new Set([
+  "NOTE",
+  "TIP",
+  "INFO",
+  "WARNING",
+  "CAUTION",
+  "IMPORTANT",
+  "DANGER",
+  "SUCCESS",
+  "HELP",
+  "FAQ",
+  "ABSTRACT",
+  "SUMMARY",
+  "TLDR",
+  "TODO",
+  "QUOTE",
+  "CITATION",
+  "EXAMPLE"
+]);
+function extractCallouts(tree) {
+  if (!tree.children) return;
+  for (let i2 = 0; i2 < tree.children.length; i2++) {
+    const node2 = tree.children[i2];
+    if (node2.type !== "blockquote" || !node2.children || node2.children.length === 0) continue;
+    const firstChild = node2.children[0];
+    if (firstChild.type !== "paragraph" || !firstChild.children) continue;
+    const firstText = firstChild.children[0];
+    if (firstText.type !== "text" || typeof firstText.value !== "string") continue;
+    const m = firstText.value.match(/^\[!([A-Za-z]+)\]\s*(?:\n|$)/);
+    if (!m) continue;
+    const tag = m[1].toUpperCase();
+    if (!CALLOUT_TYPES.has(tag)) continue;
+    const remainingText = firstText.value.replace(/^\[!([A-Za-z]+)\]\s*/, "");
+    if (remainingText) {
+      firstText.value = remainingText;
+    } else {
+      firstChild.children.shift();
+      if (firstChild.children.length === 0) node2.children.shift();
+    }
+    node2.type = "callout";
+    node2.tag = tag;
+  }
+}
 function inlineChildren(children2, ctx, fmt = {}) {
   return children2.map((c) => inlineToXml(c, ctx, fmt)).join("");
+}
+function headerBoldFmt(fmt) {
+  return { ...fmt, b: true };
 }
 function inlineToXml(node2, ctx, fmt) {
   switch (node2.type) {
@@ -23423,6 +23605,11 @@ function inlineToXml(node2, ctx, fmt) {
         return inlineChildren(node2.children, ctx, { ...fmt, link: rId });
       }
       return inlineChildren(node2.children, ctx, fmt);
+    }
+    case "math": {
+      const mathNode = node2;
+      if (mathNode.display) return "";
+      return textToRuns(String(mathNode.value ?? ""), fmt);
     }
     case "image":
       return imageToXml(node2, ctx, fmt);
@@ -23464,8 +23651,19 @@ function imageToXml(node2, ctx, fmt) {
   ctx.media.push({ path: mediaPath, data });
   const rId = `rId${ctx.nextRid++}`;
   ctx.rels.push({ id: rId, type: "image", target: mediaPath });
-  const w = ctx.imageWidthEmu;
-  const h = ctx.imageHeightEmu;
+  const EMU_PER_PX = 9525;
+  const intrinsic = readImageSize(data);
+  let w;
+  let h;
+  if (intrinsic) {
+    const fullW = intrinsic.width * EMU_PER_PX;
+    w = Math.min(fullW, ctx.imageWidthEmu);
+    h = ctx.imageHeightEmu !== DEFAULT_IMAGE_HEIGHT_EMU ? ctx.imageHeightEmu : Math.round(w * (intrinsic.height / intrinsic.width));
+  } else {
+    w = ctx.imageWidthEmu;
+    h = ctx.imageHeightEmu;
+    ctx.warnings.push(`\u65E0\u6CD5\u8BFB\u53D6\u56FE\u7247\u56FA\u6709\u5C3A\u5BF8\uFF0C\u5DF2\u4F7F\u7528\u7F3A\u7701 6"\xD74.5": ${src}`);
+  }
   const docPrId = ctx.docPrId++;
   const name = mediaPath.split("/").pop();
   return `<w:r>${rPrXml(fmt)}<w:drawing>
@@ -23500,7 +23698,7 @@ function serializeList(node2, ctx, ilvl) {
   (node2.children ?? []).forEach((item, idx) => {
     const it = item;
     if (it.type !== "listItem") return;
-    const checked = typeof it.checked === "boolean" ? it.checked ? "[x] " : "[ ] " : "";
+    const checked = typeof it.checked === "boolean" ? it.checked ? "\u2611 " : "\u2610 " : "";
     const startOverride = idx === 0 && numId === 2 && start !== 1 ? `<w:startOverride w:val="${start}"/>` : "";
     const numPr = `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/>${startOverride}</w:numPr>`;
     let first = true;
@@ -23515,6 +23713,32 @@ function serializeList(node2, ctx, ilvl) {
   });
   return out;
 }
+function splitParagraphAtBlockMath(node2, ctx, extra) {
+  const pStyle = extra?.style ?? (extra?.numPr ? "ListParagraph" : "");
+  const pPr = `${pStyle ? `<w:pStyle w:val="${pStyle}"/>` : ""}${extra?.numPr ?? ""}`;
+  const prefix = extra?.prefix ? plainRun(extra.prefix, {}) : "";
+  const headerFmt = extra?.headerBold ? headerBoldFmt({}) : {};
+  let out = "";
+  let inlineBuf = [];
+  const flushInline = () => {
+    if (inlineBuf.length > 0) {
+      out += `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ""}${prefix}${inlineChildren(inlineBuf, ctx, headerFmt)}</w:p>`;
+      inlineBuf = [];
+    }
+  };
+  for (const child of node2.children) {
+    const c = child;
+    if (c.type === "math" && c.display) {
+      flushInline();
+      const mathText = String(c.value ?? "");
+      out += `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ""}<w:r><w:t xml:space="preserve">${esc(mathText)}</w:t></w:r></w:p>`;
+    } else {
+      inlineBuf.push(child);
+    }
+  }
+  flushInline();
+  return out || `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ""}${prefix}</w:p>`;
+}
 function blockToXml(node2, ctx, extra) {
   switch (node2.type) {
     case "heading": {
@@ -23525,16 +23749,35 @@ function blockToXml(node2, ctx, extra) {
       const pStyle = extra?.style ?? (extra?.numPr ? "ListParagraph" : "");
       const pPr = `${pStyle ? `<w:pStyle w:val="${pStyle}"/>` : ""}${extra?.numPr ?? ""}`;
       const prefix = extra?.prefix ? plainRun(extra.prefix, {}) : "";
-      return `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ""}${prefix}${inlineChildren(node2.children, ctx)}</w:p>`;
+      const headerFmt = extra?.headerBold ? headerBoldFmt({}) : {};
+      const hasBlockMath = node2.children?.some(
+        (c) => c.type === "math" && c.display
+      );
+      if (!hasBlockMath) {
+        return `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ""}${prefix}${inlineChildren(node2.children, ctx, headerFmt)}</w:p>`;
+      }
+      return splitParagraphAtBlockMath(node2, ctx, { ...extra, style: pStyle });
     }
     case "code": {
       const lines = String(node2.value ?? "").split("\n");
-      return lines.map((line) => `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:t xml:space="preserve">${esc(line)}</w:t></w:r></w:p>`).join("");
+      const lang = typeof node2.lang === "string" ? node2.lang.trim() : "";
+      const annotate = lang && lang !== "mermaid";
+      return lines.map((line, idx) => {
+        let runs = `<w:r><w:t xml:space="preserve">${esc(line)}</w:t></w:r>`;
+        if (idx === 0 && annotate) {
+          runs = `<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="18"/><w:color w:val="808080"/></w:rPr><w:t xml:space="preserve">[${esc(lang)}] </w:t></w:r>${runs}`;
+        }
+        return `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr>${runs}</w:p>`;
+      }).join("");
     }
     case "list":
       return serializeList(node2, ctx, 0);
     case "blockquote": {
       return node2.children.map((c) => blockToXml(c, ctx, { style: "Quote" })).join("");
+    }
+    case "callout": {
+      const tag = String(node2.tag ?? "NOTE");
+      return `<w:p><w:pPr><w:pBdr><w:left w:val="single" w:sz="3" w:space="0" w:color="808080"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="F5F5F5"/></w:pPr><w:r><w:rPr><w:b/><w:shd w:val="clear" w:color="auto" w:fill="F5F5F5"/></w:rPr><w:t>${esc(tag)}</w:t></w:r></w:p>` + node2.children.map((c) => blockToXml(c, ctx)).join("");
     }
     case "thematicBreak": {
       return '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr></w:pPr></w:p>';
@@ -23555,26 +23798,89 @@ function blockToXml(node2, ctx, extra) {
 function tableToXml(node2, ctx) {
   const rows = (node2.children ?? []).filter((r) => r.type === "tableRow");
   const colCount = Math.max(1, ...rows.map((r) => r.children?.length ?? 0));
-  const colW = Math.floor(9e3 / colCount);
+  const colWidths = computeTableColumnWidths(rows, colCount);
   let out = '<w:tbl><w:tblPr><w:tblStyle w:val="Table"/><w:tblW w:w="0" w:type="auto"/>';
   out += "<w:tblBorders>" + ["top", "left", "bottom", "right", "insideH", "insideV"].map((b) => `<w:${b} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>`).join("") + "</w:tblBorders>";
   out += '<w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/></w:tblPr>';
-  out += `<w:tblGrid>${'<w:gridCol w:w="' + colW + '"/>'.repeat(colCount)}</w:tblGrid>`;
+  out += `<w:tblGrid>${colWidths.map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid>`;
   rows.forEach((row, ri) => {
     out += "<w:tr>";
-    row.children?.forEach((cell) => {
+    row.children?.forEach((cell, ci) => {
       const isHeader = ri === 0;
       out += "<w:tc><w:tcPr>";
-      out += `<w:tcW w:w="${colW}" w:type="dxa"/>`;
+      out += `<w:tcW w:w="${colWidths[ci]}" w:type="dxa"/>`;
       if (isHeader) out += '<w:shd w:val="clear" w:color="auto" w:fill="F2F2F2"/>';
       out += "</w:tcPr>";
       const blocks2 = cell.children ?? [];
-      out += blocks2.length === 0 ? "<w:p/>" : blocks2.map((b) => blockToXml(b, ctx, { style: "Table" })).join("");
+      if (blocks2.length === 0) {
+        out += "<w:p/>";
+      } else {
+        const cellXml = blocks2.map((b) => blockToXml(b, ctx, { style: "Table" })).join("");
+        if (isHeader) {
+          out += `<w:p><w:pPr><w:pStyle w:val="Table"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${extractCellText(blocks2)}</w:t></w:r></w:p>`;
+        } else {
+          out += cellXml;
+        }
+      }
       out += "</w:tc>";
     });
     out += "</w:tr>";
   });
   return out + "</w:tbl>";
+}
+function computeTableColumnWidths(rows, colCount) {
+  const DXA_PER_UNIT = 120;
+  const MIN_COL_W = 800;
+  const MAX_TOTAL = 9e3;
+  const widths = new Array(colCount).fill(0);
+  let hasContent = false;
+  for (let ci = 0; ci < colCount; ci++) {
+    let maxUnits = 0;
+    for (const row of rows) {
+      const cells2 = row.children ?? [];
+      const cell = cells2[ci];
+      if (!cell || !cell.children) continue;
+      const text8 = extractCellText(cell.children);
+      if (text8.length > 0) hasContent = true;
+      const units = textWidthUnits(text8);
+      if (units > maxUnits) maxUnits = units;
+    }
+    widths[ci] = Math.max(MIN_COL_W, maxUnits * DXA_PER_UNIT);
+  }
+  if (!hasContent) {
+    const eq = Math.floor(MAX_TOTAL / colCount);
+    return new Array(colCount).fill(eq);
+  }
+  const total = widths.reduce((a, b) => a + b, 0);
+  if (total > MAX_TOTAL) {
+    const scale = MAX_TOTAL / total;
+    return widths.map((w) => Math.max(MIN_COL_W, Math.floor(w * scale)));
+  }
+  return widths;
+}
+function extractCellText(children2) {
+  let out = "";
+  for (const child of children2) {
+    const n = child;
+    if (n.type === "text" && typeof n.value === "string") {
+      out += n.value;
+    } else if (n.children) {
+      out += extractCellText(n.children);
+    }
+  }
+  return out;
+}
+function textWidthUnits(text8) {
+  let units = 0;
+  for (const ch of text8) {
+    const code4 = ch.codePointAt(0) ?? 0;
+    if (code4 >= 19968 && code4 <= 40959 || code4 >= 12288 && code4 <= 12351 || code4 >= 65280 && code4 <= 65519 || code4 >= 12352 && code4 <= 12447 || code4 >= 12448 && code4 <= 12543 || code4 >= 44032 && code4 <= 55215) {
+      units += 2;
+    } else {
+      units += 1;
+    }
+  }
+  return units;
 }
 var EXT_CONTENT_TYPE = /* @__PURE__ */ new Map([
   ["rels", "application/vnd.openxmlformats-package.relationships+xml"],
@@ -23693,6 +23999,8 @@ function toDocx(files, opts = {}, onWarning) {
   let expanded = manifest.extensions?.include === false ? raw2 : expand(files, entry).text;
   expanded = expanded.replace(/^(\s*)<<</gm, "$1&lt;&lt;&lt;");
   const tree = unified().use(remarkParse).use(remarkGfm).parse(guardEscapes(expanded));
+  extractMath(tree);
+  extractCallouts(tree);
   const ctx = {
     files,
     entryDir,
