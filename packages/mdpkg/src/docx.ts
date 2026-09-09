@@ -115,6 +115,68 @@ function codeRun(text: string, fmt: RunFmt): string {
   return plainRun(text, { ...fmt, code: true });
 }
 
+/**
+ * 数学 AST 前处理 pass（Wave 1.1）
+ * remark 解析后，遍历 AST 将文本节点中的 $...$ / $$...$$ 切分为专用 math 节点。
+ * 规则：
+ *  - 仅处理 paragraph / heading 的直排 text 子节点（不递归进代码块、表格单元格、inlineCode）。
+ *  - 转义 \$ 不提取（guardEscapes 已用哨兵保护，此处不会被匹配）。
+ *  - 未闭合 $ 不提取，整段保持纯文本。
+ *  - $$...$$ 为块级 math（转为独立段落），$...$ 为行内 math。
+ * 实现：自写轻量遍历（remark-math 是额外依赖，违反零新增依赖约束）。
+ */
+function extractMath(tree: { type: string; children?: unknown[] }): void {
+  const processBlock = (node: { type: string; children?: unknown[] }) => {
+    if (!node.children) return;
+    if (node.type === 'code' || node.type === 'table' || node.type === 'inlineCode') return;
+    if (node.type === 'paragraph' || node.type === 'heading') {
+      splitMathInInline(node as { type: string; children: unknown[] });
+    }
+    for (const child of node.children) {
+      const c = child as { type: string; children?: unknown[] };
+      if (c.children) processBlock(c);
+    }
+  };
+  processBlock(tree);
+}
+
+/** 在行内子节点序列中切分 $...$ / $$...$$ 为 math 节点 */
+function splitMathInInline(node: { type: string; children: unknown[] }): void {
+  const newChildren: unknown[] = [];
+  for (const child of node.children) {
+    const n = child as { type: string; value?: string; children?: unknown[] };
+    if (n.type !== 'text' || typeof n.value !== 'string') {
+      newChildren.push(child);
+      continue;
+    }
+    const text = n.value;
+    const regex = /\$\$([\s\S]+?)\$\$|\$([^\s$][^$]*?)\$/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let hasMatch = false;
+    while ((match = regex.exec(text)) !== null) {
+      hasMatch = true;
+      const start = match.index;
+      const end = start + match[0].length;
+      if (start > lastIndex) {
+        newChildren.push({ type: 'text', value: text.slice(lastIndex, start) });
+      }
+      if (match[1] !== undefined) {
+        newChildren.push({ type: 'math', value: match[1], display: true });
+      } else if (match[2] !== undefined) {
+        newChildren.push({ type: 'math', value: match[2], display: false });
+      }
+      lastIndex = end;
+    }
+    if (!hasMatch) {
+      newChildren.push(child);
+    } else if (lastIndex < text.length) {
+      newChildren.push({ type: 'text', value: text.slice(lastIndex) });
+    }
+  }
+  node.children = newChildren;
+}
+
 /** 行内子节点序列化（段落/标题内容），fmt 逐层传递（strong/em/link 等嵌套格式） */
 function inlineChildren(children: unknown[], ctx: Ctx, fmt: RunFmt = {}): string {
   return children.map((c) => inlineToXml(c as never, ctx, fmt)).join('');
@@ -141,6 +203,11 @@ function inlineToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, fmt
       }
       // 内部锚点/相对链接：无关系可建，按普通文本输出（保留字面目标）
       return inlineChildren(node.children as never[], ctx, fmt);
+    }
+    case 'math': {
+      const mathNode = node as { display?: boolean; value?: string };
+      if (mathNode.display) return '';
+      return textToRuns(String(mathNode.value ?? ''), fmt);
     }
     case 'image': return imageToXml(node as never, ctx, fmt);
     case 'break': return `<w:r>${rPrXml(fmt)}<w:br/></w:r>`;
@@ -240,6 +307,37 @@ function serializeList(node: { ordered?: unknown; start?: unknown; children?: un
   return out;
 }
 
+/** 段落含块级 math 时，按 math 节点拆分为多个段落 */
+function splitParagraphAtBlockMath(
+  node: { children: unknown[] },
+  ctx: Ctx,
+  extra?: { numPr?: string; prefix?: string; style?: string },
+): string {
+  const pStyle = extra?.style ?? (extra?.numPr ? 'ListParagraph' : '');
+  const pPr = `${pStyle ? `<w:pStyle w:val="${pStyle}"/>` : ''}${extra?.numPr ?? ''}`;
+  const prefix = extra?.prefix ? plainRun(extra.prefix, {}) : '';
+  let out = '';
+  let inlineBuf: unknown[] = [];
+  const flushInline = () => {
+    if (inlineBuf.length > 0) {
+      out += `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}${prefix}${inlineChildren(inlineBuf, ctx)}</w:p>`;
+      inlineBuf = [];
+    }
+  };
+  for (const child of node.children) {
+    const c = child as { type?: string; display?: boolean };
+    if (c.type === 'math' && c.display) {
+      flushInline();
+      const mathText = String((c as { value?: string }).value ?? '');
+      out += `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}<w:r><w:t xml:space="preserve">${esc(mathText)}</w:t></w:r></w:p>`;
+    } else {
+      inlineBuf.push(child);
+    }
+  }
+  flushInline();
+  return out || `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}${prefix}</w:p>`;
+}
+
 /** 块级节点 → OOXML 段落/表格 XML */
 function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extra?: { numPr?: string; prefix?: string; style?: string }): string {
   switch (node.type) {
@@ -251,7 +349,13 @@ function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extr
       const pStyle = extra?.style ?? (extra?.numPr ? 'ListParagraph' : '');
       const pPr = `${pStyle ? `<w:pStyle w:val="${pStyle}"/>` : ''}${extra?.numPr ?? ''}`;
       const prefix = extra?.prefix ? plainRun(extra.prefix, {}) : '';
-      return `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}${prefix}${inlineChildren(node.children as never[], ctx)}</w:p>`;
+      const hasBlockMath = (node.children as unknown[])?.some(
+        (c) => (c as { type?: string }).type === 'math' && (c as { display?: boolean }).display,
+      );
+      if (!hasBlockMath) {
+        return `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}${prefix}${inlineChildren(node.children as never[], ctx)}</w:p>`;
+      }
+      return splitParagraphAtBlockMath(node as { children: unknown[] }, ctx, extra);
     }
     case 'code': {
       // 块级代码：每行一段（CodeBlock 样式），保留空白
@@ -449,6 +553,8 @@ export function toDocx(files: Map<string, Uint8Array>, opts: DocxOptions = {}, o
   expanded = expanded.replace(/^(\s*)<<</gm, '$1&lt;&lt;&lt;');
 
   const tree = unified().use(remarkParse).use(remarkGfm).parse(guardEscapes(expanded));
+
+  extractMath(tree as { type: string; children?: unknown[] });
 
   const ctx: Ctx = {
     files,

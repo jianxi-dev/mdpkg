@@ -346,3 +346,55 @@ test('4.5 CLI：缺省 -o 按包名替换 .docx（demo.mdpkg → demo.docx）', 
   assert.ok(r.stdout.includes('demo.docx'), `stdout 应含输出路径: ${r.stdout}`);
   rmSync(tmp, { recursive: true, force: true });
 });
+
+// ============ Wave 1.1 数学 AST 前处理 pass ============
+
+test('Wave 1.1 行内数学：$a^2 + b^2$ 去除 $ 定界符', async () => {
+  const body = '公式 $a^2 + b^2$ 结束\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('a^2 + b^2'), '行内数学内容应保真');
+  assert.ok(!text.includes('$'), '不应残留 $ 定界符');
+});
+
+test('Wave 1.1 块级数学：$$...$$ 独立段落无 $', async () => {
+  const body = '前文\n\n$$E = mc^2$$\n\n后文\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(text.includes('E = mc^2'), '块级数学内容应保真');
+  assert.ok(!text.includes('$'), '不应残留 $ 定界符');
+  assert.ok(doc.includes('</w:p><w:p>'), '块级数学应独立成段');
+});
+
+test('Wave 1.1 相邻数学：行内与块级共存', async () => {
+  const body = '行内 $a$ 与块级\n\n$$b^2$$\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('行内'), '行内文本应保真');
+  assert.ok(text.includes('a'), '行内数学内容应保真');
+  assert.ok(text.includes('b^2'), '块级数学内容应保真');
+  assert.ok(!text.includes('$'), '不应残留 $');
+});
+
+test('Wave 1.1 代码块内不提取数学', async () => {
+  const body = '```\n$x + y$\n```\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('$x + y$'), '代码块内 $ 应保持原样');
+});
+
+test('Wave 1.1 表格内不提取数学', async () => {
+  const body = '| 列 |\n| --- |\n| $a$ |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('$a$'), '表格单元格内 $ 应保持原样');
+});
+
+test('Wave 1.1 未闭合 $ 不崩溃且保持原样', async () => {
+  const body = '未闭合 $a + b 文本\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('$a + b'), '未闭合 $ 应保持原样');
+  assert.ok(text.includes('未闭合'), '上下文文本应保真');
+});
