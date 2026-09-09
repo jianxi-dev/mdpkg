@@ -325,8 +325,7 @@ function serializeList(node: { ordered?: unknown; start?: unknown; children?: un
   (node.children ?? []).forEach((item, idx) => {
     const it = item as { type?: string; checked?: unknown; children?: unknown[] };
     if (it.type !== 'listItem') return;
-    // 任务列表（GFM）：勾选框以文本前缀呈现
-    const checked = typeof it.checked === 'boolean' ? (it.checked ? '[x] ' : '[ ] ') : '';
+    const checked = typeof it.checked === 'boolean' ? (it.checked ? '☑ ' : '☐ ') : '';
     // 有序列表自定义起始号：仅首项带 startOverride
     const startOverride = idx === 0 && numId === 2 && start !== 1 ? `<w:startOverride w:val="${start}"/>` : '';
     const numPr = `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/>${startOverride}</w:numPr>`;

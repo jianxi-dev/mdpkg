@@ -125,8 +125,10 @@ test('4.1 列表：ul/ol 编号、嵌套 ilvl、任务列表前缀', async () =>
   assert.ok(doc.includes('<w:ilvl w:val="1"/>'), '嵌套列表应 ilvl=1');
   assert.ok(doc.includes('<w:ilvl w:val="2"/>'), '二级嵌套应 ilvl=2');
   const text = docxText(doc);
-  assert.ok(text.includes('[x] 已完成'), '任务列表已完成项应带 [x] 前缀');
-  assert.ok(text.includes('[ ] 未完成'), '任务列表未完成项应带 [ ] 前缀');
+  assert.ok(text.includes('☑ 已完成'), '任务列表已完成项应带 ☑ 字形');
+  assert.ok(text.includes('☐ 未完成'), '任务列表未完成项应带 ☐ 字形');
+  assert.ok(!text.includes('[x]'), '不应残留 [x] 文本');
+  assert.ok(!text.includes('[ ]'), '不应残留 [ ] 文本');
   for (const t of ['项目一', '嵌套一', '嵌套二', '第一', '第二']) {
     assert.ok(text.includes(t), `列表文本应保真: ${t}`);
   }
@@ -427,4 +429,42 @@ test('Wave 1.2 非首行标签：> [!TIP] 不在首行则不转换', async () =>
   const out = await unpackDocx(toDocx(pkg(body)));
   const doc = dec.decode(out.get('word/document.xml')!);
   assert.ok(doc.includes('<w:pStyle w:val="Quote"/>'), '非首行标签应保持 Quote');
+});
+
+// ============ Wave 1.3 任务列表复选框字形 ============
+
+test('Wave 1.3 勾选任务：- [x] 输出 ☑ 字形', async () => {
+  const body = '- [x] 已完成\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('☑'), '应含 ☑ 字形');
+  assert.ok(!text.includes('[x]'), '不应残留 [x] 文本');
+  assert.ok(text.includes('已完成'), '任务文本应保真');
+});
+
+test('Wave 1.3 未勾选任务：- [ ] 输出 ☐ 字形', async () => {
+  const body = '- [ ] 未完成\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('☐'), '应含 ☐ 字形');
+  assert.ok(!text.includes('[ ]'), '不应残留 [ ] 文本');
+  assert.ok(text.includes('未完成'), '任务文本应保真');
+});
+
+test('Wave 1.3 常规列表项（无 checked 字段）不插字形', async () => {
+  const body = '- 普通项\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(!text.includes('☑'), '不应含 ☑');
+  assert.ok(!text.includes('☐'), '不应含 ☐');
+  assert.ok(text.includes('普通项'), '列表文本应保真');
+});
+
+test('Wave 1.3 嵌套任务列表：子项也使用字形', async () => {
+  const body = '- [x] 父项\n  - [ ] 子项\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('☑'), '父项应含 ☑');
+  assert.ok(text.includes('☐'), '子项应含 ☐');
+  assert.ok(text.includes('父项') && text.includes('子项'), '嵌套文本应保真');
 });
