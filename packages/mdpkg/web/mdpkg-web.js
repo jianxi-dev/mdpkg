@@ -23814,13 +23814,10 @@ function tableToXml(node2, ctx) {
       const blocks2 = cell.children ?? [];
       if (blocks2.length === 0) {
         out += "<w:p/>";
+      } else if (isHeader) {
+        out += `<w:p><w:pPr><w:pStyle w:val="Table"/></w:pPr>${inlineChildren(blocks2, ctx, { b: true })}</w:p>`;
       } else {
-        const cellXml = blocks2.map((b) => blockToXml(b, ctx, { style: "Table" })).join("");
-        if (isHeader) {
-          out += `<w:p><w:pPr><w:pStyle w:val="Table"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${extractCellText(blocks2)}</w:t></w:r></w:p>`;
-        } else {
-          out += cellXml;
-        }
+        out += blocks2.map((b) => blockToXml(b, ctx, { style: "Table" })).join("");
       }
       out += "</w:tc>";
     });
