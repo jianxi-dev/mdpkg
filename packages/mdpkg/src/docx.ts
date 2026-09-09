@@ -177,6 +177,42 @@ function splitMathInInline(node: { type: string; children: unknown[] }): void {
   node.children = newChildren;
 }
 
+/**
+ * Callout 识别（Wave 1.2）
+ * 检测 blockquote 首行是否为 GFM alert `> [!TYPE]`，是则转为 callout 节点。
+ * 键集快照对齐 md-bundle/clairis calloutTypeMap（来源：GitHub GFM 标准 + md-bundle 实现）。
+ * 未知键 → 保持 blockquote 原样。
+ */
+const CALLOUT_TYPES = new Set([
+  'NOTE', 'TIP', 'INFO', 'WARNING', 'CAUTION', 'IMPORTANT', 'DANGER', 'SUCCESS', 'HELP', 'FAQ',
+  'ABSTRACT', 'SUMMARY', 'TLDR', 'TODO', 'QUOTE', 'CITATION', 'EXAMPLE',
+]);
+
+function extractCallouts(tree: { type: string; children?: unknown[] }): void {
+  if (!tree.children) return;
+  for (let i = 0; i < tree.children.length; i++) {
+    const node = tree.children[i] as { type: string; children?: unknown[] };
+    if (node.type !== 'blockquote' || !node.children || node.children.length === 0) continue;
+    const firstChild = node.children[0] as { type: string; children?: unknown[] };
+    if (firstChild.type !== 'paragraph' || !firstChild.children) continue;
+    const firstText = firstChild.children[0] as { type: string; value?: string };
+    if (firstText.type !== 'text' || typeof firstText.value !== 'string') continue;
+    const m = firstText.value.match(/^\[!([A-Za-z]+)\]\s*(?:\n|$)/);
+    if (!m) continue;
+    const tag = m[1].toUpperCase();
+    if (!CALLOUT_TYPES.has(tag)) continue;
+    const remainingText = firstText.value.replace(/^\[!([A-Za-z]+)\]\s*/, '');
+    if (remainingText) {
+      firstText.value = remainingText;
+    } else {
+      firstChild.children.shift();
+      if (firstChild.children.length === 0) node.children.shift();
+    }
+    node.type = 'callout';
+    (node as { tag?: string }).tag = tag;
+  }
+}
+
 /** 行内子节点序列化（段落/标题内容），fmt 逐层传递（strong/em/link 等嵌套格式） */
 function inlineChildren(children: unknown[], ctx: Ctx, fmt: RunFmt = {}): string {
   return children.map((c) => inlineToXml(c as never, ctx, fmt)).join('');
@@ -366,8 +402,12 @@ function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extr
     }
     case 'list': return serializeList(node as never, ctx, 0);
     case 'blockquote': {
-      // 引用：子块套 Quote 样式（左缩进 + 斜体）
       return (node.children as never[]).map((c) => blockToXml(c as never, ctx, { style: 'Quote' })).join('');
+    }
+    case 'callout': {
+      const tag = String((node as { tag?: unknown }).tag ?? 'NOTE');
+      return `<w:p><w:pPr><w:pBdr><w:left w:val="single" w:sz="3" w:space="0" w:color="808080"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="F5F5F5"/></w:pPr><w:r><w:rPr><w:b/><w:shd w:val="clear" w:color="auto" w:fill="F5F5F5"/></w:rPr><w:t>${esc(tag)}</w:t></w:r></w:p>` +
+        (node.children as never[]).map((c) => blockToXml(c as never, ctx)).join('');
     }
     case 'thematicBreak': {
       // 水平线：段落底部边框
@@ -555,6 +595,7 @@ export function toDocx(files: Map<string, Uint8Array>, opts: DocxOptions = {}, o
   const tree = unified().use(remarkParse).use(remarkGfm).parse(guardEscapes(expanded));
 
   extractMath(tree as { type: string; children?: unknown[] });
+  extractCallouts(tree as { type: string; children?: unknown[] });
 
   const ctx: Ctx = {
     files,

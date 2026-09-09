@@ -398,3 +398,33 @@ test('Wave 1.1 未闭合 $ 不崩溃且保持原样', async () => {
   assert.ok(text.includes('$a + b'), '未闭合 $ 应保持原样');
   assert.ok(text.includes('未闭合'), '上下文文本应保真');
 });
+
+// ============ Wave 1.2 Callout 识别 ============
+
+test('Wave 1.2 已知键 callout：> [!TIP] 输出带标签的 callout 块', async () => {
+  const body = '> [!TIP]\n> 提示内容\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(text.includes('TIP'), '应含 TIP 标签');
+  assert.ok(text.includes('提示内容'), 'callout 内容应保真');
+  assert.ok(doc.includes('<w:pBdr>'), 'callout 应有左边框');
+  assert.ok(doc.includes('<w:shd'), 'callout 应有底纹');
+});
+
+test('Wave 1.2 未知键降级：> [!FOO] 保持 blockquote', async () => {
+  const body = '> [!FOO]\n> 未知内容\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(text.includes('FOO'), '未知键标签文本应保留');
+  assert.ok(text.includes('未知内容'), '内容应保真');
+  assert.ok(doc.includes('<w:pStyle w:val="Quote"/>'), '未知键应使用 Quote 样式');
+});
+
+test('Wave 1.2 非首行标签：> [!TIP] 不在首行则不转换', async () => {
+  const body = '> 首行文本\n> [!TIP]\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('<w:pStyle w:val="Quote"/>'), '非首行标签应保持 Quote');
+});
