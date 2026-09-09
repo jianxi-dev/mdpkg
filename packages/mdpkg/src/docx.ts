@@ -17,6 +17,7 @@ import { resolveRef } from './refpath.ts';
 import { assertSupported, assertMarkdownEntrypoint, inferEntrypoint } from './manifest.ts';
 import { packRaw } from './zip-core.ts';
 import { MdeError, E } from './errors.ts';
+import { readImageSize } from './image-size.ts';
 
 // OOXML 命名空间：document.xml 根元素一次性声明，正文引用各前缀
 const NS = {
@@ -287,8 +288,22 @@ function imageToXml(node: { url?: unknown; alt?: unknown }, ctx: Ctx, fmt: RunFm
   ctx.media.push({ path: mediaPath, data });
   const rId = `rId${ctx.nextRid++}`;
   ctx.rels.push({ id: rId, type: 'image', target: mediaPath });
-  const w = ctx.imageWidthEmu;
-  const h = ctx.imageHeightEmu;
+  // 固有尺寸换算：EMU = px * 9525（96dpi）；保持宽高比缩放进 imageWidthEmu
+  const EMU_PER_PX = 9525;
+  const intrinsic = readImageSize(data);
+  let w: number;
+  let h: number;
+  if (intrinsic) {
+    const fullW = intrinsic.width * EMU_PER_PX;
+    w = Math.min(fullW, ctx.imageWidthEmu);
+    h = ctx.imageHeightEmu !== DEFAULT_IMAGE_HEIGHT_EMU
+      ? ctx.imageHeightEmu
+      : Math.round(w * (intrinsic.height / intrinsic.width));
+  } else {
+    w = ctx.imageWidthEmu;
+    h = ctx.imageHeightEmu;
+    ctx.warnings.push(`无法读取图片固有尺寸，已使用缺省 6"×4.5": ${src}`);
+  }
   const docPrId = ctx.docPrId++;
   const name = mediaPath.split('/').pop()!;
   return `<w:r>${rPrXml(fmt)}<w:drawing>

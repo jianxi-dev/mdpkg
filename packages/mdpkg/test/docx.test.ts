@@ -507,3 +507,45 @@ test('Wave 2.1 代码块 shading 保留：F6F8FA 底纹', async () => {
   const styles = dec.decode(out.get('word/styles.xml')!);
   assert.ok(styles.includes('F6F8FA'), 'CodeBlock 样式应保留 F6F8FA 底纹');
 });
+
+// ============ Wave 2.2 固有图片尺寸 ============
+
+test('Wave 2.2 宽图：保持宽高比缩放（1920×1080 → 宽优先）', async () => {
+  const png = new Uint8Array(24);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png[11] = 13;
+  png[12] = 0x49; png[13] = 0x48; png[14] = 0x44; png[15] = 0x52;
+  png[16] = 0x00; png[17] = 0x00; png[18] = 0x07; png[19] = 0x80;
+  png[20] = 0x00; png[21] = 0x00; png[22] = 0x04; png[23] = 0x38;
+  const body = '![宽图](assets/wide.png)\n';
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/wide.png': png })));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('cx="5486400"'), '宽图宽应缩放到 6 英寸');
+  assert.ok(doc.includes('cy="3086100"'), '宽图高应按 16:9 比例缩放');
+});
+
+test('Wave 2.2 高图：保持宽高比缩放（窄高图）', async () => {
+  const png = new Uint8Array(24);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png[11] = 13;
+  png[12] = 0x49; png[13] = 0x48; png[14] = 0x44; png[15] = 0x52;
+  png[16] = 0x00; png[17] = 0x00; png[18] = 0x02; png[19] = 0x58;
+  png[20] = 0x00; png[21] = 0x00; png[22] = 0x04; png[23] = 0xb0;
+  const body = '![高图](assets/tall.png)\n';
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/tall.png': png })));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('cx="5486400"'), '高图宽也应缩放到 6 英寸上限');
+  assert.ok(doc.includes('cy="10972800"'), '高图高应按 1:2 比例缩放');
+});
+
+test('Wave 2.2 无法读取固有尺寸：回退缺省 + 警告', async () => {
+  const badPng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00]);
+  const body = '![坏图](assets/bad.png)\n';
+  const warnings: string[] = [];
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/bad.png': badPng }), {}, (w) => warnings.push(w)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('cx="5486400"'), '应回退到缺省 6 英寸宽');
+  assert.ok(doc.includes('cy="4114800"'), '应回退到缺省 4.5 英寸高');
+  assert.ok(warnings.length > 0, '应产生警告');
+  assert.ok(warnings[0].includes('固有尺寸'), '警告应提及固有尺寸');
+});
