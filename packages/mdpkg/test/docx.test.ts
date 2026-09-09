@@ -612,3 +612,59 @@ test('Wave 2.3 表头嵌套格式保留：**bold** + `code` 保持结构且加�
   assert.ok(text.includes('粗体'), '粗体文本应保真');
   assert.ok(text.includes('代码'), '代码文本应保真');
 });
+
+// ============ Wave 3.2 spec 场景对齐（补充 Wave 1/2 未覆盖的场景） ============
+
+test('Wave 3.2 空文档回归：仅标题无正文仍输出合法 docx', async () => {
+  const body = '# 仅标题\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('<w:p>'), '应含段落');
+  assert.ok(doc.includes('仅标题'), '标题文本应保真');
+  assert.ok(out.has('[Content_Types].xml'), '应含 [Content_Types].xml');
+  assert.ok(out.has('word/styles.xml'), '应含 styles.xml');
+});
+
+test('Wave 3.2 缺失资源：alt 占位 + 不阻断 + 退出码 0', async () => {
+  const body = '![缺失的图片](assets/gone.png)\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(!doc.includes('<w:drawing>'), '缺失资源不应嵌入 drawing');
+  assert.ok(docxText(doc).includes('缺失的图片'), '应以 alt 文本占位');
+});
+
+test('Wave 3.2 mermaid 降级：按代码块输出（不渲染图、不插语言标注）', async () => {
+  const body = '```mermaid\ngraph TD;\nA to B\n```\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(text.includes('graph TD;'), 'mermaid 内容应保真');
+  assert.ok(text.includes('A to B'), 'mermaid 内容应保真');
+  assert.ok(doc.includes('<w:pStyle w:val="CodeBlock"/>'), '应使用 CodeBlock 样式');
+  assert.ok(!text.includes('[mermaid]'), 'mermaid 不应插语言标注');
+});
+
+test('Wave 3.2 raw HTML 字面量：非 script/style 节点以文本呈现', async () => {
+  // docx 路径将非 script/style 的 raw HTML 节点以字面量文本呈现（XML 转义，无执行面）
+  const body = '正文 <em>强调</em> 后文\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const text = docxText(dec.decode(out.get('word/document.xml')!));
+  assert.ok(text.includes('&lt;em&gt;强调&lt;/em&gt;'), '非 script/style HTML 应以字面量文本呈现（XML 转义）');
+  assert.ok(text.includes('正文'), '上下文应保真');
+  assert.ok(text.includes('后文'), '上下文应保真');
+});
+
+test('Wave 3.2 表头加粗 + 数据行不嵌套：完整表格保真', async () => {
+  const body = '| 名称 | 数值 |\n| --- | --- |\n| 甲 | 1 |\n| 乙 | 2 |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const rows = doc.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  assert.ok(rows && rows.length === 3, '应有 3 行（表头 + 2 数据行）');
+  assert.ok(rows![0].includes('<w:b/>'), '表头行应加粗');
+  assert.ok(!rows![1].includes('<w:b/>'), '数据行 1 不应加粗');
+  assert.ok(!rows![2].includes('<w:b/>'), '数据行 2 不应加粗');
+  const text = docxText(doc);
+  for (const t of ['名称', '数值', '甲', '乙']) {
+    assert.ok(text.includes(t), `单元格文本应保真: ${t}`);
+  }
+});
