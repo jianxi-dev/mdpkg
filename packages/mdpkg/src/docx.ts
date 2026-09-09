@@ -475,14 +475,11 @@ function tableToXml(node: { children?: unknown[] }, ctx: Ctx): string {
       const blocks = (cell as { children?: unknown[] }).children ?? [];
       if (blocks.length === 0) {
         out += '<w:p/>';
+      } else if (isHeader) {
+        // 表头单元格：行内子节点序列化时注入 b:true，保留段落/行内结构（strong/em/inlineCode 嵌套格式）
+        out += `<w:p><w:pPr><w:pStyle w:val="Table"/></w:pPr>${inlineChildren(blocks, ctx, { b: true })}</w:p>`;
       } else {
-        const cellXml = blocks.map((b) => blockToXml(b as never, ctx, { style: 'Table' })).join('');
-        if (isHeader) {
-          // 表头单元格：将所有 run 整体加粗（在段落层注入 <w:b/> run）
-          out += `<w:p><w:pPr><w:pStyle w:val="Table"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${extractCellText(blocks)}</w:t></w:r></w:p>`;
-        } else {
-          out += cellXml;
-        }
+        out += blocks.map((b) => blockToXml(b as never, ctx, { style: 'Table' })).join('');
       }
       out += '</w:tc>';
     });

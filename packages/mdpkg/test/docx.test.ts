@@ -594,3 +594,21 @@ test('Wave 2.3 表头加粗不影响数据行', async () => {
   const dataRow = rows![1];
   assert.ok(!dataRow.includes('<w:b/>'), '数据行不应含 <w:b/>');
 });
+
+test('Wave 2.3 表头嵌套格式保留：**bold** + `code` 保持结构且加粗', async () => {
+  const body = '| **粗体** `代码` | 普通 |\n| --- | --- |\n| x | y |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const firstRow = doc.match(/<w:tr>([\s\S]*?)<\/w:tr>/);
+  assert.ok(firstRow, '应有表头行');
+  const headerCell = firstRow![1];
+  // 加粗 run 存在
+  assert.ok(headerCell.includes('<w:b/>'), '表头应含 <w:b/>');
+  // 行内代码结构保留（Consolas 字体 + F2F2F2 底纹）
+  assert.ok(headerCell.includes('Consolas'), '行内代码应保留 Consolas');
+  assert.ok(headerCell.includes('F2F2F2'), '行内代码应保留 F2F2F2 底纹');
+  // 文本内容保真
+  const text = docxText(doc);
+  assert.ok(text.includes('粗体'), '粗体文本应保真');
+  assert.ok(text.includes('代码'), '代码文本应保真');
+});
