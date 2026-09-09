@@ -102,6 +102,36 @@ test('JPEG：SOF2 头解析 640×480', () => {
   assert.deepEqual(size, { width: 640, height: 480 });
 });
 
+test('JPEG：SOF0 段前带 FF FF 填充字节 → 正确解析 800×600', () => {
+  // FF D8 FF FF FF C0 [len] [precision] [height] [width]
+  const data = new Uint8Array([
+    0xff, 0xd8, // SOI
+    0xff, 0xff, 0xff, // 填充字节
+    0xff, 0xc0, // SOF0
+    0x00, 0x0b, // 长度 = 11
+    0x08, // 精度
+    0x02, 0x58, // 600
+    0x03, 0x20, // 800
+  ]);
+  const size = readImageSize(data);
+  assert.deepEqual(size, { width: 800, height: 600 });
+});
+
+test('JPEG：SOF0 段后紧跟 FF FF 填充 → 正确解析 640×480', () => {
+  // FF D8 FF C0 [len] [precision] [H] [W] FF FF（SOF 后填充不影响解析）
+  const data = new Uint8Array([
+    0xff, 0xd8, // SOI
+    0xff, 0xc0, // SOF0
+    0x00, 0x0b, // 长度 = 11
+    0x08, // 精度
+    0x01, 0xe0, // 480
+    0x02, 0x80, // 640
+    0xff, 0xff, // 尾部填充
+  ]);
+  const size = readImageSize(data);
+  assert.deepEqual(size, { width: 640, height: 480 });
+});
+
 test('JPEG：非 SOF 标记段（无尺寸）→ null', () => {
   // APP0 标记（FFE0）不含尺寸
   const data = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00]);
@@ -129,6 +159,42 @@ test('WebP：VP8X 头解析 1920×1080', () => {
 test('WebP：VP8X 1×1 最小尺寸', () => {
   const size = readImageSize(webpHeader(1, 1));
   assert.deepEqual(size, { width: 1, height: 1 });
+});
+
+/** 构造 WebP VP8L（无损）头：bytes 12-15 = "VP8L", bytes 21-24 = 14-bit 宽高 */
+function webpVp8LHeader(width: number, height: number): Uint8Array {
+  const data = new Uint8Array(25);
+  // RIFF
+  data[0] = 0x52; data[1] = 0x49; data[2] = 0x46; data[3] = 0x46;
+  data[4] = 0x00; data[5] = 0x00; data[6] = 0x00; data[7] = 0x00;
+  // WEBP
+  data[8] = 0x57; data[9] = 0x45; data[10] = 0x42; data[11] = 0x50;
+  // VP8L
+  data[12] = 0x56; data[13] = 0x50; data[14] = 0x38; data[15] = 0x4c;
+  // VP8L 14-bit 小端位打包：低 14 位 = width-1, 高 14 位 = height-1
+  const w = width - 1;
+  const h = height - 1;
+  // byte21 = w[7:0], byte22 = w[13:8] | h[1:0]<<6, byte23 = h[9:2], byte24 = h[13:10]
+  data[21] = w & 0xff;
+  data[22] = ((w >> 8) & 0x3f) | ((h & 0x03) << 6);
+  data[23] = (h >> 2) & 0xff;
+  data[24] = (h >> 10) & 0x0f;
+  return data;
+}
+
+test('WebP：VP8L 无损头解析 800×600', () => {
+  const size = readImageSize(webpVp8LHeader(800, 600));
+  assert.deepEqual(size, { width: 800, height: 600 });
+});
+
+test('WebP：VP8L 1×1 最小尺寸', () => {
+  const size = readImageSize(webpVp8LHeader(1, 1));
+  assert.deepEqual(size, { width: 1, height: 1 });
+});
+
+test('WebP：VP8L 大尺寸 4096×2048', () => {
+  const size = readImageSize(webpVp8LHeader(4096, 2048));
+  assert.deepEqual(size, { width: 4096, height: 2048 });
 });
 
 // ============ 边界 ============

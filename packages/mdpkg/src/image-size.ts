@@ -9,10 +9,14 @@ export interface ImageSize {
 
 /** 从位图字节读取固有宽高；未知格式 / 截断 / 损坏 → null */
 export function readImageSize(data: Uint8Array): ImageSize | null {
-  if (pngSize(data) != null) return pngSize(data)!;
-  if (jpegSize(data) != null) return jpegSize(data)!;
-  if (gifSize(data) != null) return gifSize(data)!;
-  if (webpSize(data) != null) return webpSize(data)!;
+  const png = pngSize(data);
+  if (png) return png;
+  const jpeg = jpegSize(data);
+  if (jpeg) return jpeg;
+  const gif = gifSize(data);
+  if (gif) return gif;
+  const webp = webpSize(data);
+  if (webp) return webp;
   return null;
 }
 
@@ -41,6 +45,11 @@ function jpegSize(data: Uint8Array): ImageSize | null {
       offset++;
       continue;
     }
+    // 跳过连续的 0xFF 填充字节（JPEG 标准允许 marker 前出现任意数量 0xFF）
+    while (offset + 1 < data.length && data[offset + 1] === 0xff) {
+      offset++;
+    }
+    if (offset + 1 >= data.length) break;
     const marker = data[offset + 1];
     // SOF0/1/2 含尺寸信息
     if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
@@ -102,7 +111,7 @@ function webpSize(data: Uint8Array): ImageSize | null {
     const b2 = data[23];
     const b3 = data[24];
     const width = 1 + (((b1 & 0x3f) << 8) | b0);
-    const height = 1 + ((b3 << 6) | ((b2 & 0xf0) >> 4) | ((b1 & 0xc0) >> 2));
+    const height = 1 + (((b1 & 0xc0) >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10));
     return { width, height };
   }
   return null;
