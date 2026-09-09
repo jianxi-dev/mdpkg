@@ -393,10 +393,19 @@ function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extr
       return splitParagraphAtBlockMath(node as { children: unknown[] }, ctx, extra);
     }
     case 'code': {
-      // 块级代码：每行一段（CodeBlock 样式），保留空白
+      // 块级代码：每行一段（CodeBlock 样式），保留空白；有 lang 且非 mermaid 时首行前插灰色标注 run
       const lines = String(node.value ?? '').split('\n');
+      const lang = typeof node.lang === 'string' ? node.lang.trim() : '';
+      const annotate = lang && lang !== 'mermaid';
       return lines
-        .map((line) => `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:t xml:space="preserve">${esc(line)}</w:t></w:r></w:p>`)
+        .map((line, idx) => {
+          let runs = `<w:r><w:t xml:space="preserve">${esc(line)}</w:t></w:r>`;
+          if (idx === 0 && annotate) {
+            // 语言标注 run：灰色 9pt 非等宽，插在代码内容 run 之前
+            runs = `<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="18"/><w:color w:val="808080"/></w:rPr><w:t xml:space="preserve">[${esc(lang)}] </w:t></w:r>${runs}`;
+          }
+          return `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr>${runs}</w:p>`;
+        })
         .join('');
     }
     case 'list': return serializeList(node as never, ctx, 0);

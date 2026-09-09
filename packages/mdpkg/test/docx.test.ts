@@ -468,3 +468,42 @@ test('Wave 1.3 嵌套任务列表：子项也使用字形', async () => {
   assert.ok(text.includes('☐'), '子项应含 ☐');
   assert.ok(text.includes('父项') && text.includes('子项'), '嵌套文本应保真');
 });
+
+// ============ Wave 2.1 代码块语言标注 ============
+
+test('Wave 2.1 有 lang：```ts 首行前插 [ts] 灰色标注 run', async () => {
+  const body = '```ts\nconst x = 1;\n```\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(text.includes('[ts]'), '应含 [ts] 标注');
+  assert.ok(text.includes('const x = 1;'), '代码内容应保真');
+  assert.ok(doc.includes('<w:color w:val="808080"/>'), '标注应为灰色');
+  assert.ok(doc.includes('<w:sz w:val="18"/>'), '标注应为 9pt');
+  assert.ok(doc.includes('<w:pStyle w:val="CodeBlock"/>'), '应保留 CodeBlock 样式');
+});
+
+test('Wave 2.1 无 lang：纯代码块无标注', async () => {
+  const body = '```\nconst y = 2;\n```\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(text.includes('const y = 2;'), '代码内容应保真');
+  assert.ok(!doc.includes('<w:color w:val="808080"/>'), '无 lang 不应有灰色标注');
+});
+
+test('Wave 2.1 mermaid：不插语言标注', async () => {
+  const body = '```mermaid\ngraph TD;\n```\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(text.includes('graph TD;'), 'mermaid 内容应保真');
+  assert.ok(!text.includes('[mermaid]'), 'mermaid 不应有语言标注');
+});
+
+test('Wave 2.1 代码块 shading 保留：F6F8FA 底纹', async () => {
+  const body = '```py\nprint("hi")\n```\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const styles = dec.decode(out.get('word/styles.xml')!);
+  assert.ok(styles.includes('F6F8FA'), 'CodeBlock 样式应保留 F6F8FA 底纹');
+});
