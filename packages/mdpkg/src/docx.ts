@@ -51,6 +51,7 @@ interface Ctx {
   symbols: boolean;
   imageWidthEmu: number;
   imageHeightEmu: number;
+  explicitImageHeight: boolean; // 调用方是否显式传入 imageHeightEmu（哨兵比较替代标志）
   media: { path: string; data: Uint8Array }[]; // 待写入 word/media/ 的位图
   rels: { id: string; type: string; target: string; external?: boolean }[]; // document.xml.rels
   warnings: string[];
@@ -299,11 +300,17 @@ function imageToXml(node: { url?: unknown; alt?: unknown }, ctx: Ctx, fmt: RunFm
   let w: number;
   let h: number;
   if (intrinsic) {
-    const fullW = intrinsic.width * EMU_PER_PX;
-    w = Math.min(fullW, ctx.imageWidthEmu);
-    h = ctx.imageHeightEmu !== DEFAULT_IMAGE_HEIGHT_EMU
-      ? ctx.imageHeightEmu
-      : Math.round(w * (intrinsic.height / intrinsic.width));
+    if (intrinsic.width === 0 || intrinsic.height === 0) {
+      w = ctx.imageWidthEmu;
+      h = ctx.imageHeightEmu;
+      ctx.warnings.push(`图片固有尺寸无效(0)，已使用缺省尺寸: ${src}`);
+    } else {
+      const fullW = intrinsic.width * EMU_PER_PX;
+      w = Math.min(fullW, ctx.imageWidthEmu);
+      h = ctx.explicitImageHeight
+        ? ctx.imageHeightEmu
+        : Math.round(w * (intrinsic.height / intrinsic.width));
+    }
   } else {
     w = ctx.imageWidthEmu;
     h = ctx.imageHeightEmu;
@@ -399,7 +406,14 @@ function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extr
   switch (node.type) {
     case 'heading': {
       const depth = Math.min(6, Math.max(1, Number(node.depth) || 1));
-      return `<w:p><w:pPr><w:pStyle w:val="Heading${depth}"/></w:pPr>${inlineChildren(node.children as never[], ctx)}</w:p>`;
+      const style = `Heading${depth}`;
+      const hasBlockMath = (node.children as unknown[])?.some(
+        (c) => (c as { type?: string }).type === 'math' && (c as { display?: boolean }).display,
+      );
+      if (hasBlockMath) {
+        return splitParagraphAtBlockMath(node as { children: unknown[] }, ctx, { style });
+      }
+      return `<w:p><w:pPr><w:pStyle w:val="${style}"/></w:pPr>${inlineChildren(node.children as never[], ctx)}</w:p>`;
     }
     case 'paragraph': {
       const pStyle = extra?.style ?? (extra?.numPr ? 'ListParagraph' : '');
@@ -701,12 +715,14 @@ export function toDocx(files: Map<string, Uint8Array>, opts: DocxOptions = {}, o
   extractMath(tree as { type: string; children?: unknown[] });
   extractCallouts(tree as { type: string; children?: unknown[] });
 
+  const explicitImageHeight = opts.imageHeightEmu !== undefined;
   const ctx: Ctx = {
     files,
     entryDir,
     symbols: opts.symbols !== false && manifest.extensions?.symbols !== 'off',
     imageWidthEmu: opts.imageWidthEmu ?? DEFAULT_IMAGE_WIDTH_EMU,
     imageHeightEmu: opts.imageHeightEmu ?? DEFAULT_IMAGE_HEIGHT_EMU,
+    explicitImageHeight,
     media: [],
     rels: [],
     warnings: [],

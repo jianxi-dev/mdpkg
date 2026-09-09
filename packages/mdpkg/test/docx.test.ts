@@ -550,6 +550,26 @@ test('Wave 2.2 无法读取固有尺寸：回退缺省 + 警告', async () => {
   assert.ok(warnings[0].includes('固有尺寸'), '警告应提及固有尺寸');
 });
 
+test('Wave 2.2 零宽图片：回退缺省尺寸 + 不产生 NaN', async () => {
+  // PNG IHDR 宽度=0, 高度=100（畸形头）
+  const png = new Uint8Array(24);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png[11] = 13;
+  png[12] = 0x49; png[13] = 0x48; png[14] = 0x44; png[15] = 0x52;
+  png[16] = 0x00; png[17] = 0x00; png[18] = 0x00; png[19] = 0x00; // width=0
+  png[20] = 0x00; png[21] = 0x00; png[22] = 0x00; png[23] = 0x64; // height=100
+  const body = '![零宽](assets/zero.png)\n';
+  const warnings: string[] = [];
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/zero.png': png }), {}, (w) => warnings.push(w)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('cx="5486400"'), '应回退到缺省 6 英寸宽');
+  assert.ok(doc.includes('cy="4114800"'), '应回退到缺省 4.5 英寸高');
+  assert.ok(!doc.includes('NaN'), '不应含 NaN');
+  assert.ok(!doc.includes('Infinity'), '不应含 Infinity');
+  assert.ok(warnings.length > 0, '应产生警告');
+  assert.ok(warnings[0].includes('无效'), '警告应提及无效尺寸');
+});
+
 // ============ Wave 2.3 表头加粗 + 内容宽度列 ============
 
 test('Wave 2.3 表头单元格：显式 <w:b/> 加粗', async () => {
@@ -667,4 +687,53 @@ test('Wave 3.2 表头加粗 + 数据行不嵌套：完整表格保真', async ()
   for (const t of ['名称', '数值', '甲', '乙']) {
     assert.ok(text.includes(t), `单元格文本应保真: ${t}`);
   }
+});
+
+// ============ Review 修复：heading 块级 math 不被静默丢弃 ============
+
+test('Review 修复 heading 含块级 math：$$...$$ 不被丢弃且保持 Heading 样式', async () => {
+  const body = '# 标题\n\n## 含公式标题\n\n$$E = mc^2$$\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  // 块级 math 内容应出现在输出中（不被静默丢弃）
+  assert.ok(text.includes('E = mc^2'), '块级数学内容应保真');
+  assert.ok(!text.includes('$'), '不应残留 $ 定界符');
+  // 应含 Heading2 样式（含公式标题的深度为 2）
+  assert.ok(doc.includes('<w:pStyle w:val="Heading2"/>'), '应保留 Heading2 样式');
+});
+
+test('Review 修复 heading 内含前后文 + 块级 math：拆段且样式一致', async () => {
+  const body = '## 前文 $$x^2$$ 后文\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(text.includes('前文'), '前文应保真');
+  assert.ok(text.includes('x^2'), '块级数学内容应保真');
+  assert.ok(text.includes('后文'), '后文应保真');
+  // 拆分后的各段均应使用 Heading2 样式
+  const headingMatches = doc.match(/<w:pStyle w:val="Heading2"\/>/g);
+  assert.ok(headingMatches && headingMatches.length >= 2, '拆分后的多段均应含 Heading2 样式');
+});
+
+// ============ Review 修复：显式 imageHeightEmu 哨兵比较 ============
+
+test('Review 修复 显式 imageHeightEmu 等于默认值时优先使用显式值', async () => {
+  // 构造 100×100 的 PNG（固有尺寸可被读取）
+  const png = new Uint8Array(24);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png[11] = 13;
+  png[12] = 0x49; png[13] = 0x48; png[14] = 0x44; png[15] = 0x52;
+  png[16] = 0x00; png[17] = 0x00; png[18] = 0x00; png[19] = 0x64; // width=100
+  png[20] = 0x00; png[21] = 0x00; png[22] = 0x00; png[23] = 0x64; // height=100
+  const body = '![图](assets/square.png)\n';
+  // 显式传入 imageHeightEmu = 4114800（= 默认 4.5 英寸），此时应直接使用该值而非按宽高比计算
+  const DEFAULT_IMAGE_HEIGHT_EMU = Math.round(6 * 914400 * 0.75); // 4114800
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/square.png': png }), { imageHeightEmu: DEFAULT_IMAGE_HEIGHT_EMU }));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  // 100px * 9525 = 952500 EMU（< 6 英寸上限），所以宽 = 952500
+  // 若按宽高比计算：h = 952500 * (100/100) = 952500
+  // 若使用显式值：h = 4114800
+  // 只有 explicitImageHeight 标志正确时才会用 4114800
+  assert.ok(doc.includes('cy="4114800"'), '显式 imageHeightEmu 等于默认值时仍应优先使用显式值');
 });
