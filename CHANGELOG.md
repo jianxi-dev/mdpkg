@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.0.0] - 2026-09-10
+
+### Added
+
+- **docx 表格样式**：表头自动加粗强调 + 内容自适应列宽（`tableHeaderBold`）。
+- **docx 图片固有尺寸**：`image-size.ts` 读取 PNG/JPEG/GIF 原生宽高，EMU 单位等比保留宽高比（`intrinsicImageSizing`）。
+- **docx 代码块语言标注**：fenced code block 的 `language` 属性写入 OOXML（`codeBlockLanguage`）。
+- **docx GFM alert 识别**：`> [!NOTE]` / `[!WARNING]` / `[!TIP]` 等 GFM alert callout 渲染为带样式的文本框（key snapshot 对齐）。
+- **docx 数学提取降级**：`$...$$` / `$$...$$` 数学公式提取为可读纯文本替代（`mathExtraction`）。
+- **docx spec-scenario parity 测试套件**：逐场景对齐规范预期输出。
+- **docx 跨端契约测试**：浏览器 `toDocx` 与 CLI `render --format docx` 输出一致性验证。
+
+### Fixed
+
+- **docx 任务列表复选框**：用 Wingdings 字符替换文本前缀 `☐` / `☑`，避免 Word 中渲染异常。
+- **docx 表头粗体保留单元格结构**：bold 不再破坏表格单元格层级。
+- **docx 标题内块级数学**：heading 中的 `$$...$$` 块级数学正确保留。
+- **docx imageHeightEmu 显式标志**：图片高度写入使用显式 `imageHeightEmu` 标志位。
+- **image-size 连续 0xFF 填充字节**：JPEG marker 前跳过连续的 0xFF 填充字节，修复部分 JPEG 尺寸解析失败。
+
+### Changed
+
+- 浏览器 bundle 重建（Wave 2/3 docx 变更进入 mdpkg-web）。
+- 测试套件 136 → **281**（docx 全场景 + 跨端契约 + image-size + 回归）。
+
 ## [0.2.0.0] - 2026-09-05
 
 ### Added
