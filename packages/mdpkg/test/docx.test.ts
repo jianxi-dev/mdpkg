@@ -549,3 +549,48 @@ test('Wave 2.2 无法读取固有尺寸：回退缺省 + 警告', async () => {
   assert.ok(warnings.length > 0, '应产生警告');
   assert.ok(warnings[0].includes('固有尺寸'), '警告应提及固有尺寸');
 });
+
+// ============ Wave 2.3 表头加粗 + 内容宽度列 ============
+
+test('Wave 2.3 表头单元格：显式 <w:b/> 加粗', async () => {
+  const body = '| 列A | 列B |\n| --- | --- |\n| 甲 | 乙 |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const firstRowMatch = doc.match(/<w:tr>([\s\S]*?)<\/w:tr>/);
+  assert.ok(firstRowMatch, '应有表头行');
+  const firstRow = firstRowMatch![1];
+  assert.ok(firstRow.includes('<w:b/>'), '表头单元格应含 <w:b/>');
+  assert.ok(firstRow.includes('F2F2F2'), '表头应保留 F2F2F2 底纹');
+});
+
+test('Wave 2.3 内容宽度：宽列分配更多宽度', async () => {
+  const body = '| A | BBBBBBBBBBBBBBBBBBBB |\n| --- | --- |\n| x | y |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const gridMatch = doc.match(/<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/);
+  assert.ok(gridMatch, '应有 tblGrid');
+  const cols = [...gridMatch![1].matchAll(/w:w="(\d+)"/g)].map((m) => Number(m[1]));
+  assert.ok(cols.length === 2, '应有 2 列');
+  assert.ok(cols[1] > cols[0], '宽列应分配更多宽度');
+});
+
+test('Wave 2.3 全空列：等分兜底', async () => {
+  const body = '|  |  |  |\n| --- | --- | --- |\n|  |  |  |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const gridMatch = doc.match(/<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/);
+  assert.ok(gridMatch, '应有 tblGrid');
+  const cols = [...gridMatch![1].matchAll(/w:w="(\d+)"/g)].map((m) => Number(m[1]));
+  assert.ok(cols.length === 3, '应有 3 列');
+  assert.ok(cols.every((w) => w === cols[0]), '全空列应等分');
+});
+
+test('Wave 2.3 表头加粗不影响数据行', async () => {
+  const body = '| 列A | 列B |\n| --- | --- |\n| 数据1 | 数据2 |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const rows = doc.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  assert.ok(rows && rows.length >= 2, '应有表头行和数据行');
+  const dataRow = rows![1];
+  assert.ok(!dataRow.includes('<w:b/>'), '数据行不应含 <w:b/>');
+});
