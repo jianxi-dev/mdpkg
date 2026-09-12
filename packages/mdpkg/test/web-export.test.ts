@@ -87,3 +87,61 @@ test('packMdpkg lenient 子目录单 md（lib/guide.md + assets/）→ 打包成
   assert.ok(out.has('lib/guide.md'), '解包应含 lib/guide.md');
   assert.ok(out.has('assets/icon.png'), '解包应含资源 assets/icon.png');
 });
+
+// ── Wave 3.1 跨端错误契约：toDocx 非致命问题走 onWarning 不抛异常 ──
+
+test('mdpkg-web toDocx：SVG 降级走 onWarning 不抛异常', () => {
+  const files = new Map<string, Uint8Array>([
+    ['document.md', enc.encode('# 标题\n\n![svg](assets/a.svg)\n')],
+    ['assets/a.svg', enc.encode('<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>')],
+  ]);
+  const warnings: string[] = [];
+  const bytes = toDocx(files, {}, (w) => warnings.push(w));
+  assert.ok(bytes instanceof Uint8Array, 'toDocx 应返回 Uint8Array');
+  assert.ok(bytes.length > 0, '应产出非空 docx 字节');
+  assert.ok(warnings.length > 0, 'SVG 应触发警告');
+  assert.ok(warnings.some((w) => w.includes('SVG')), '警告应提及 SVG');
+});
+
+test('mdpkg-web toDocx：缺失资源不阻断，alt 占位不抛异常', () => {
+  const files = new Map<string, Uint8Array>([
+    ['document.md', enc.encode('# 标题\n\n![缺失](assets/missing.png)\n')],
+  ]);
+  const warnings: string[] = [];
+  const bytes = toDocx(files, {}, (w) => warnings.push(w));
+  assert.ok(bytes instanceof Uint8Array, 'toDocx 应返回 Uint8Array');
+  // 缺失资源走 alt 占位（与 HTML 渲染路径一致，渲染路径不执行完整校验，不触发警告）
+  assert.equal(warnings.length, 0, '缺失资源不触发警告（渲染路径语义）');
+});
+
+test('mdpkg-web toDocx：损坏图片头走 onWarning + 缺省尺寸不抛异常', () => {
+  const badPng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00]);
+  const files = new Map<string, Uint8Array>([
+    ['document.md', enc.encode('# 标题\n\n![坏图](assets/bad.png)\n')],
+    ['assets/bad.png', badPng],
+  ]);
+  const warnings: string[] = [];
+  const bytes = toDocx(files, {}, (w) => warnings.push(w));
+  assert.ok(bytes instanceof Uint8Array, 'toDocx 应返回 Uint8Array');
+  assert.ok(warnings.length > 0, '损坏图片头应触发警告');
+  assert.ok(warnings.some((w) => w.includes('固有尺寸')), '警告应提及固有尺寸');
+});
+
+test('mdpkg-web toDocx：正常导出（位图嵌入）不触发警告', () => {
+  // 最小合法 PNG（8 字节签名 + IHDR 宽高各 10px）
+  const png = new Uint8Array(8 + 4 + 4 + 13 + 4);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  png[8] = 0; png[9] = 0; png[10] = 0; png[11] = 13;
+  png[12] = 0x49; png[13] = 0x48; png[14] = 0x44; png[15] = 0x52;
+  png[16] = 0; png[17] = 0; png[18] = 0; png[19] = 10;
+  png[20] = 0; png[21] = 0; png[22] = 0; png[23] = 10;
+  png[24] = 8; png[25] = 2; png[26] = 0; png[27] = 0; png[28] = 0;
+  const files = new Map<string, Uint8Array>([
+    ['document.md', enc.encode('# 标题\n\n![图](assets/a.png)\n')],
+    ['assets/a.png', png],
+  ]);
+  const warnings: string[] = [];
+  const bytes = toDocx(files, {}, (w) => warnings.push(w));
+  assert.ok(bytes instanceof Uint8Array, 'toDocx 应返回 Uint8Array');
+  assert.equal(warnings.length, 0, '正常位图不应触发警告');
+});
