@@ -145,3 +145,71 @@ test('相对引用: include 内 ../ 引用重写后内联', () => {
   const html = render(files, { inline: true }).html;
   assert.ok(html.includes('src="data:image/png;base64,'), '被包含文件的父级引用应重写为 assets/b.png 并内联');
 });
+
+// ============ PR-A: frontmatter 剥离 + CJK 间距（反哺 md-bundle） ============
+
+test('frontmatter: 文档头部 YAML 剥离，不渲染为 hr 与正文', () => {
+  const md = '---\ntitle: 示例文档\ntags: [a, b]\n---\n\n# 标题\n';
+  const html = render(pkg(md).withManifest()).html;
+  assert.ok(!html.includes('title:'), 'frontmatter 内容应被剥离');
+  assert.ok(!html.includes('tags:'), 'frontmatter 内容应被剥离');
+  assert.ok(html.includes('<h1>标题</h1>'), 'frontmatter 后正文应正常渲染');
+});
+
+test('frontmatter: 容忍 BOM 与 EOF 无尾换行', () => {
+  const html = render(pkg('\uFEFF---\ntitle: x\n---\n正文\n').withManifest()).html;
+  assert.ok(!html.includes('title:'), '带 BOM 的 frontmatter 也应剥离');
+  assert.ok(html.includes('正文'), '剥离后正文保留');
+});
+
+test('frontmatter: 文档中部 --- 保留为分隔线（仅头部剥离）', () => {
+  const md = '# 标题\n\n---\n\n正文\n';
+  const html = render(pkg(md).withManifest()).html;
+  assert.ok(html.includes('<hr'), '文档中部 --- 应保留为分隔线');
+});
+
+test('frontmatter: include 展开后形成的文档头部仍剥离，中部 include 的 --- 不动', () => {
+  const files = new Map<string, Uint8Array>([
+    ['document.md', enc('<<< meta.md\n\n# 标题\n')],
+    ['meta.md', enc('---\nsummary: s\n---\n')],
+  ]);
+  const html = render(files).html;
+  assert.ok(!html.includes('summary:'), 'include 展开后位于头部的 frontmatter 应剥离');
+  const mid = render(new Map<string, Uint8Array>([
+    ['document.md', enc('# 标题\n\n<<< meta2.md\n')],
+    ['meta2.md', enc('---\nsummary: s\n---\n')],
+  ])).html;
+  assert.ok(mid.includes('summary:'), 'include 内容位于中部时不应剥离（保留可见文本）');
+});
+
+test('CJK 间距: 中英/中文数字间插零宽，代码块与行内代码不插', () => {
+  const md = '中文English与数字123混排\n\n```\n中文code\n```\n\n行内 `中文inline` 不插\n';
+  const html = render(pkg(md).withManifest()).html;
+  assert.ok(html.includes('中文\u200BEnglish'), '中→英应插零宽');
+  assert.ok(html.includes('English\u200B与'), '英→中应插零宽');
+  assert.ok(html.includes('数字\u200B123'), '中→数字应插零宽');
+  assert.ok(html.includes('123\u200B混排'), '数字→中应插零宽');
+  assert.ok(!html.includes('中文\u200Bcode'), '代码块内不应插零宽');
+  assert.ok(html.includes('<code>中文inline</code>'), '行内代码不应插零宽');
+});
+
+test('CJK 间距: cjkSpacing:false 关闭插距', () => {
+  const html = render(pkg('中文English\n').withManifest(), { cjkSpacing: false }).html;
+  assert.ok(!html.includes('中文\u200BEnglish'), '关闭后不应插零宽');
+});
+
+test('CJK 守卫: 累计 text 超 20 万字符后不再插零宽', () => {
+  const body = '中a'.repeat(100_000) + '\n\n' + '中b';
+  const html = render(pkg(body + '\n').withManifest()).html;
+  assert.ok(html.includes('中\u200Ba'), '预算内应插零宽');
+  assert.ok(!html.includes('中\u200Bb'), '预算耗尽后的文本节点不应插零宽');
+});
+
+test('外链: 协议相对 // 与 http 均保留并补 referrerpolicy（不内联）', () => {
+  const files = pkg('![a](//example.com/x.png)\n\n![b](https://example.com/y.png)\n').withManifest();
+  const html = render(files, { inline: true }).html;
+  assert.ok(html.includes('src="//example.com/x.png"'), '协议相对 URL 应原样保留');
+  assert.ok(html.includes('src="https://example.com/y.png"'), 'https URL 应原样保留');
+  assert.ok(html.includes('referrerpolicy="no-referrer"'), '外链应补 referrerpolicy');
+  assert.ok(!/src="data:[^"]*example\.com/.test(html), '外链不应被内联为 data URI');
+});

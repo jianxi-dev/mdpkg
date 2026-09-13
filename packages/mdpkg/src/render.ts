@@ -24,6 +24,8 @@ interface RenderOptions {
   symbols?: boolean;
   /** include 展开开关：缺省跟随 manifest.extensions.include（无 manifest 时默认展开）；显式 false 不展开（<<< 降级为可见文本，不报 E508）；显式 true 强制展开 */
   include?: boolean;
+  /** CJK 间距开关：中英文/中文数字之间插零宽空格（U+200B），改善中英混排阅读；缺省开启 */
+  cjkSpacing?: boolean;
 }
 
 export interface RenderResult {
@@ -34,6 +36,41 @@ export interface RenderResult {
 }
 
 const isExternal = (src: string) => /^(https?:)?\/\//i.test(src);
+
+// YAML frontmatter 剥离：只匹配文档头部的 --- 块（容忍 BOM），防 --- 被渲染为 <hr> 与正文并列
+const FRONTMATTER_RE = /^\uFEFF?---\s*\n([\s\S]*?)\n---(?:\n|$)/;
+
+// CJK 间距守卫：累计 text 超过阈值后不再处理（超大文档性能保护）
+const MAX_CJK_PAD_CHARS = 200_000;
+const CJK_CHAR = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/;
+const LATIN_DIGIT = /[A-Za-z0-9]/;
+
+function insertCjkSpacing(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    out += text[i];
+    const next = text[i + 1];
+    if (next && ((CJK_CHAR.test(text[i]) && LATIN_DIGIT.test(next)) || (LATIN_DIGIT.test(text[i]) && CJK_CHAR.test(next)))) {
+      out += '\u200B';
+    }
+    i++;
+  }
+  return out;
+}
+
+/** remark 插件：对 text 节点做 CJK 间距（code/inlineCode 不是 text 节点，天然跳过） */
+function cjkSpacingPlugin(options: { enabled?: boolean } = {}) {
+  return (tree: unknown) => {
+    if (options.enabled === false) return;
+    let budget = MAX_CJK_PAD_CHARS;
+    visit(tree as never, 'text', (node: { value: string }) => {
+      if (budget <= 0) return;
+      budget -= node.value.length;
+      node.value = insertCjkSpacing(node.value);
+    });
+  };
+}
 
 /** 把包内相对路径资源替换为 data URI；外链图片补 referrerpolicy */
 function assetsPlugin(files: Map<string, Uint8Array>, inline: boolean, entryDir: string) {
@@ -92,6 +129,8 @@ export function render(files: Map<string, Uint8Array>, opts: RenderOptions = {})
   // include 开关：显式 opts.include 优先；缺省跟随 manifest.extensions.include（无 manifest 时默认展开）
   const includeEnabled = opts.include ?? !(manifest.extensions?.include === false);
   let expanded = includeEnabled ? expand(files, entry).text : raw;
+  // 文档头部 YAML frontmatter 剥离（先于 <<< 降级：YAML 的 merge key << 不应被可见文本化）
+  expanded = expanded.replace(FRONTMATTER_RE, '');
   // 未被展开的指令（缩进的、或 include 关闭时）必须作为可见文本降级：
   // 否则行首的 <<< 会被 remark 当作 HTML 标签，再被 rehype-sanitize 清除，原文凭空消失（违反规范 §9）
   expanded = expanded.replace(/^(\s*)<<</gm, '$1&lt;&lt;&lt;');
@@ -100,6 +139,7 @@ export function render(files: Map<string, Uint8Array>, opts: RenderOptions = {})
     .use(remarkParse)
     .use(remarkGfm)
     .use(symbolsPlugin, { enabled: opts.symbols !== false && manifest.extensions?.symbols !== 'off' })
+    .use(cjkSpacingPlugin, { enabled: opts.cjkSpacing !== false })
     .use(remarkRehype)
     .use(rehypeSanitize) // 清 script / on* / javascript: 等
     .use(assetsPlugin, files, mode === 'inline', entryDir)

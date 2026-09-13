@@ -23258,6 +23258,34 @@ var MdpkgWeb = (() => {
   // src/render.ts
   var DEFAULT_MAX_INLINE_BYTES = 50 * 1024 * 1024;
   var isExternal = (src) => /^(https?:)?\/\//i.test(src);
+  var FRONTMATTER_RE = /^\uFEFF?---\s*\n([\s\S]*?)\n---(?:\n|$)/;
+  var MAX_CJK_PAD_CHARS = 2e5;
+  var CJK_CHAR = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/;
+  var LATIN_DIGIT = /[A-Za-z0-9]/;
+  function insertCjkSpacing(text8) {
+    let out = "";
+    let i2 = 0;
+    while (i2 < text8.length) {
+      out += text8[i2];
+      const next = text8[i2 + 1];
+      if (next && (CJK_CHAR.test(text8[i2]) && LATIN_DIGIT.test(next) || LATIN_DIGIT.test(text8[i2]) && CJK_CHAR.test(next))) {
+        out += "\u200B";
+      }
+      i2++;
+    }
+    return out;
+  }
+  function cjkSpacingPlugin(options = {}) {
+    return (tree) => {
+      if (options.enabled === false) return;
+      let budget = MAX_CJK_PAD_CHARS;
+      visit(tree, "text", (node2) => {
+        if (budget <= 0) return;
+        budget -= node2.value.length;
+        node2.value = insertCjkSpacing(node2.value);
+      });
+    };
+  }
   function assetsPlugin(files, inline, entryDir) {
     return (tree) => {
       visit(tree, "element", (node2) => {
@@ -23313,8 +23341,9 @@ var MdpkgWeb = (() => {
     const raw2 = new TextDecoder().decode(body3);
     const includeEnabled = opts.include ?? !(manifest.extensions?.include === false);
     let expanded = includeEnabled ? expand(files, entry).text : raw2;
+    expanded = expanded.replace(FRONTMATTER_RE, "");
     expanded = expanded.replace(/^(\s*)<<</gm, "$1&lt;&lt;&lt;");
-    const html7 = unified().use(remarkParse).use(remarkGfm).use(symbolsPlugin, { enabled: opts.symbols !== false && manifest.extensions?.symbols !== "off" }).use(remarkRehype).use(rehypeSanitize).use(assetsPlugin, files, mode === "inline", entryDir).use(rehypeStringify).processSync(guardEscapes(expanded)).toString();
+    const html7 = unified().use(remarkParse).use(remarkGfm).use(symbolsPlugin, { enabled: opts.symbols !== false && manifest.extensions?.symbols !== "off" }).use(cjkSpacingPlugin, { enabled: opts.cjkSpacing !== false }).use(remarkRehype).use(rehypeSanitize).use(assetsPlugin, files, mode === "inline", entryDir).use(rehypeStringify).processSync(guardEscapes(expanded)).toString();
     return { html: html7, mode, totalBytes, degraded };
   }
   function wrapDocument(title, bodyHtml) {
