@@ -1,0 +1,82 @@
+name: Change closure signal
+
+# Layer 1（确定性信号）：合并的 PR 关闭某 change 的最后一张子票时，给该 PR 打
+# LABEL_CLOSURE_PENDING 标签 + 评论；change-workflow 会话启动时消费并执行 G4 收尾。
+# 标签名与子票标题前缀从项目根 .change-workflow.conf 读取（缺失则用默认）。
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  signal:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .change-workflow.conf
+          sparse-checkout-cone-mode: false
+
+      - name: Detect completed changes and emit signal
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # 载入项目配置（可选）
+          if [ -f .change-workflow.conf ]; then
+            set -a; . ./.change-workflow.conf; set +a
+          fi
+          LABEL_READY="${LABEL_READY:-ready-for-agent}"
+          LABEL_CLOSURE_PENDING="${LABEL_CLOSURE_PENDING:-change-close-pending}"
+
+          echo "PR #$PR merged — detecting change closure…"
+
+          # 该 PR 关闭的 issue（GitHub 解析 PR body/commits 中的 fixes/closes）
+          CLOSED=$(gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
+            --jq '.closingIssuesReferences[].number' 2>/dev/null || true)
+
+          # 从子票标题 [change=<名>/<task>] 提取 change 名
+          CHANGES=""
+          for n in $CLOSED; do
+            T=$(gh issue view "$n" --repo "$REPO" --json title --jq .title 2>/dev/null || echo "")
+            case "$T" in
+              \[change=*/*)
+                c="${T#\[change=}"; c="${c%%/*}"
+                CHANGES="$CHANGES $c"
+                ;;
+            esac
+          done
+          CHANGES=$(printf '%s\n' $CHANGES | sort -u | grep -v '^$' || true)
+          if [ -z "$CHANGES" ]; then
+            echo "无 [change=…] 子票关闭，跳过信号"
+            exit 0
+          fi
+
+          gh label create "$LABEL_CLOSURE_PENDING" --repo "$REPO" \
+            --color FBCA04 \
+            --description "待 change-workflow 会话启动消费（G4 收尾）" \
+            --force >/dev/null 2>&1 || true
+
+          for c in $CHANGES; do
+            REMAIN=$(gh issue list --repo "$REPO" --state open --label "$LABEL_READY" --limit 200 \
+              --json title \
+              --jq "[.[] | select(.title | startswith(\"[change=$c/\"))] | length")
+            if [ "$REMAIN" -eq 0 ]; then
+              echo "change '$c': 无剩余 open 子票 → 打 $LABEL_CLOSURE_PENDING"
+              gh pr edit "$PR" --repo "$REPO" --add-label "$LABEL_CLOSURE_PENDING"
+              gh pr comment "$PR" --repo "$REPO" --body "🔔 **$LABEL_CLOSURE_PENDING**：change \`$c\` 的子票已全部关闭（本 PR 合并）。
+
+          change-workflow 会话启动时将自动执行 G4 收尾（sync → validate --strict → archive → 看板 Done → 关闭 spec issue）。无需人工提醒。"
+            else
+              echo "change '$c': 仍有 $REMAIN 张 open 子票，不打信号"
+            fi
+          done
