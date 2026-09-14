@@ -582,7 +582,30 @@ function computeTableColumnWidths(rows: { children?: unknown[] }[], colCount: nu
   const total = widths.reduce((a, b) => a + b, 0);
   if (total > MAX_TOTAL) {
     const scale = MAX_TOTAL / total;
-    return widths.map((w) => Math.max(MIN_COL_W, Math.floor(w * scale)));
+    const scaled = widths.map((w) => Math.max(MIN_COL_W, Math.floor(w * scale)));
+    let sum = scaled.reduce((a, b) => a + b, 0);
+    // 精确修正：若取整后总和仍 > MAX_TOTAL，从最宽列逐次 -1
+    while (sum > MAX_TOTAL) {
+      let best = -1;
+      for (let i = 0; i < scaled.length; i++) {
+        if (scaled[i] > MIN_COL_W && (best === -1 || scaled[i] > scaled[best])) best = i;
+      }
+      if (best === -1) break; // 全列触底 800，无法再减
+      scaled[best]--;
+      sum--;
+    }
+    // 取整导致总和 < MAX_TOTAL，差值加到首列
+    if (sum < MAX_TOTAL) scaled[0] += MAX_TOTAL - sum;
+    return scaled;
+  }
+  if (total < MAX_TOTAL) {
+    // 内容宽度不足页宽时，按比例放大至满宽（fixed 布局按 gridCol 渲染，不满宽会留白）
+    const scale = MAX_TOTAL / total;
+    const scaled = widths.map((w) => Math.round(w * scale));
+    // 修正取整误差，使总和精确等于 MAX_TOTAL（差值加到首列）
+    const diff = MAX_TOTAL - scaled.reduce((a, b) => a + b, 0);
+    scaled[0] += diff;
+    return scaled;
   }
   return widths;
 }

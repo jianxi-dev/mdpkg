@@ -829,3 +829,93 @@ test('回归#9-7b callout 类型色：warning 黄 / note 蓝 / quote 灰', async
   assert.ok(doc.includes('w:fill="F0F7FA"'), 'note 应使用蓝色背景');
   assert.ok(doc.includes('w:fill="F5F5F5"'), 'quote 应使用灰色背景');
 });
+
+// ============ 回归#13：短内容表格列宽不满宽 ============
+
+function gridColSum(doc: string): number {
+  const re = /<w:gridCol w:w="(\d+)"/g;
+  let sum = 0;
+  let m;
+  while ((m = re.exec(doc)) !== null) sum += Number(m[1]);
+  return sum;
+}
+
+/** 提取第一个 tblGrid 中所有 gridCol w:w 值数组 */
+function gridColValues(doc: string): number[] {
+  const tblRe = /<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/;
+  const tbl = tblRe.exec(doc);
+  if (!tbl) return [];
+  const re = /w:w="(\d+)"/g;
+  const out: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(tbl[1])) !== null) out.push(Number(m[1]));
+  return out;
+}
+
+test('回归#13-1 2列短内容表格：gridCol 总和 === 9026', async () => {
+  const body = '| 列A | 列B |\n| --- | --- |\n| 甲 | 乙 |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const sum = gridColSum(doc);
+  assert.equal(sum, 9026, `2列短内容表格 gridCol 总和应为 9026，实际 ${sum}`);
+});
+
+test('回归#13-2 4列短内容表格：gridCol 总和 === 9026', async () => {
+  const body = '| A | B | C | D |\n| --- | --- | --- | --- |\n| 甲 | 乙 | 丙 | 丁 |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const sum = gridColSum(doc);
+  assert.equal(sum, 9026, `4列短内容表格 gridCol 总和应为 9026，实际 ${sum}`);
+});
+
+test('回归#13-3 长内容压缩：3列各60全角字符 gridCol 总和 === 9026', async () => {
+  const long = '国'.repeat(60);
+  const body = `| ${long} | ${long} | ${long} |\n| --- | --- | --- |\n| ${long} | ${long} | ${long} |\n`;
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const sum = gridColSum(doc);
+  assert.equal(sum, 9026, `长内容压缩表格 gridCol 总和应为 9026，实际 ${sum}`);
+});
+
+test('回归#13-4 混合文档：短表格+长表格各一，每个 gridCol 总和 === 9026', async () => {
+  const long = '字'.repeat(60);
+  const body = [
+    '| 短A | 短B |',
+    '| --- | --- |',
+    '| 甲 | 乙 |',
+    '',
+    `| ${long} | ${long} |`,
+    '| --- | --- |',
+    `| ${long} | ${long} |`,
+  ].join('\n');
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const re = /<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/g;
+  let m: RegExpExecArray | null;
+  let idx = 0;
+  while ((m = re.exec(doc)) !== null) {
+    const colRe = /gridCol w:w="(\d+)"/g;
+    let s = 0;
+    let c: RegExpExecArray | null;
+    while ((c = colRe.exec(m[1])) !== null) s += Number(c[1]);
+    assert.equal(s, 9026, `表格${idx + 1} gridCol 总和应为 9026，实际 ${s}`);
+    idx++;
+  }
+  assert.equal(idx, 2, `应有 2 个表格，实际 ${idx}`);
+});
+
+// 回归#13-5 触底保护：12 列极短内容表格，每列 ≥800 且总和不被扣破
+test('回归#13-5 触底保护：12 列极短内容表格，每列 ≥800 且总和不被扣破', async () => {
+  const body = '| A | B | C | D | E | F | G | H | I | J | K | L |\n'
+    + '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n'
+    + '| 甲 | 乙 | 丙 | 丁 | 戊 | 己 | 庚 | 辛 | 壬 | 癸 | 子 | 丑 |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const cols = gridColValues(doc);
+  assert.equal(cols.length, 12, `应有 12 列，实际 ${cols.length}`);
+  for (const w of cols) {
+    assert.ok(w >= 800, `每列应 ≥800（MIN_COL_W），实际 ${w}`);
+  }
+  const sum = cols.reduce((a, b) => a + b, 0);
+  assert.ok(sum >= 9026, `总和应 ≥9026（触底保护生效，宁可超宽也不扣破 min），实际 ${sum}`);
+});
