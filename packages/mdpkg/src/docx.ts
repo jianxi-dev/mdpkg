@@ -15,6 +15,7 @@ import { replaceSymbols, unguard, guardEscapes } from './symbols.ts';
 import { expand } from './include.ts';
 import { resolveRef } from './refpath.ts';
 import { assertSupported, assertMarkdownEntrypoint, inferEntrypoint } from './manifest.ts';
+import { FRONTMATTER_RE } from './render.ts';
 import { packRaw } from './zip-core.ts';
 import { MdeError, E } from './errors.ts';
 import { readImageSize } from './image-size.ts';
@@ -27,6 +28,9 @@ const NS = {
   a: 'http://schemas.openxmlformats.org/drawingml/2006/main',
   pic: 'http://schemas.openxmlformats.org/drawingml/2006/picture',
 };
+
+/** 单元格段落间距：before=0/after=0/line=240，抵消 docDefaults after=160 造成的视觉顶偏 */
+const SPACING = '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>';
 
 const EMU_PER_INCH = 914400; // 1 英寸 = 914400 EMU
 const DEFAULT_IMAGE_WIDTH_EMU = 6 * EMU_PER_INCH; // 默认宽 6 英寸
@@ -63,7 +67,17 @@ interface Ctx {
 
 /** XML 文本转义（& < > " '） */
 function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]!);
+  return s.replace(
+    /[&<>"']/g,
+    (c) =>
+      ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&apos;',
+      })[c]!
+  );
 }
 
 /** raw HTML 降级：script/style 元素整体丢弃，其余输出字面量文本（无执行面） */
@@ -188,20 +202,53 @@ function splitMathInInline(node: { type: string; children: unknown[] }): void {
  * 未知键 → 保持 blockquote 原样。
  */
 const CALLOUT_TYPES = new Set([
-  'NOTE', 'TIP', 'INFO', 'WARNING', 'CAUTION', 'IMPORTANT', 'DANGER', 'SUCCESS', 'HELP', 'FAQ',
-  'ABSTRACT', 'SUMMARY', 'TLDR', 'TODO', 'QUOTE', 'CITATION', 'EXAMPLE',
-  'FAILURE', 'ERROR', 'BUG', 'QUESTION', 'HINT',
+  'NOTE',
+  'TIP',
+  'INFO',
+  'WARNING',
+  'CAUTION',
+  'IMPORTANT',
+  'DANGER',
+  'SUCCESS',
+  'HELP',
+  'FAQ',
+  'ABSTRACT',
+  'SUMMARY',
+  'TLDR',
+  'TODO',
+  'QUOTE',
+  'CITATION',
+  'EXAMPLE',
+  'FAILURE',
+  'ERROR',
+  'BUG',
+  'QUESTION',
+  'HINT',
 ]);
 
 // Callout 类型 → [背景色, 左边框色]（GFM alert + Obsidian 主题近似色）
 const CALLOUT_COLORS: Record<string, [string, string]> = {
-  NOTE: ['F0F7FA', '6C9DBF'], INFO: ['F0F7FA', '6C9DBF'], ABSTRACT: ['F0F7FA', '6C9DBF'],
-  SUMMARY: ['F0F7FA', '6C9DBF'], TLDR: ['F0F7FA', '6C9DBF'],
-  TIP: ['ECF7EC', '5F9B5F'], HINT: ['ECF7EC', '5F9B5F'], SUCCESS: ['ECF7EC', '5F9B5F'],
-  WARNING: ['FCF8E8', 'C2A053'], CAUTION: ['FCF8E8', 'C2A053'],
-  DANGER: ['FBEDEB', 'BB5B4C'], FAILURE: ['FBEDEB', 'BB5B4C'], ERROR: ['FBEDEB', 'BB5B4C'], BUG: ['FBEDEB', 'BB5B4C'],
-  IMPORTANT: ['F3EFFA', '7A6CB0'], QUESTION: ['F0F0FA', '6B6BC0'], HELP: ['F0F0FA', '6B6BC0'], FAQ: ['F0F0FA', '6B6BC0'],
-  EXAMPLE: ['F6F0FA', '9660B8'], QUOTE: ['F5F5F5', '808080'], CITATION: ['F5F5F5', '808080'],
+  NOTE: ['F0F7FA', '6C9DBF'],
+  INFO: ['F0F7FA', '6C9DBF'],
+  ABSTRACT: ['F0F7FA', '6C9DBF'],
+  SUMMARY: ['F0F7FA', '6C9DBF'],
+  TLDR: ['F0F7FA', '6C9DBF'],
+  TIP: ['ECF7EC', '5F9B5F'],
+  HINT: ['ECF7EC', '5F9B5F'],
+  SUCCESS: ['ECF7EC', '5F9B5F'],
+  WARNING: ['FCF8E8', 'C2A053'],
+  CAUTION: ['FCF8E8', 'C2A053'],
+  DANGER: ['FBEDEB', 'BB5B4C'],
+  FAILURE: ['FBEDEB', 'BB5B4C'],
+  ERROR: ['FBEDEB', 'BB5B4C'],
+  BUG: ['FBEDEB', 'BB5B4C'],
+  IMPORTANT: ['F3EFFA', '7A6CB0'],
+  QUESTION: ['F0F0FA', '6B6BC0'],
+  HELP: ['F0F0FA', '6B6BC0'],
+  FAQ: ['F0F0FA', '6B6BC0'],
+  EXAMPLE: ['F6F0FA', '9660B8'],
+  QUOTE: ['F5F5F5', '808080'],
+  CITATION: ['F5F5F5', '808080'],
   TODO: ['EFF7F3', '5F9B8A'],
 };
 const CALLOUT_DEFAULT: [string, string] = ['F0F7FA', '6C9DBF'];
@@ -211,15 +258,21 @@ function extractCallouts(tree: { type: string; children?: unknown[] }): void {
   for (let i = 0; i < tree.children.length; i++) {
     const node = tree.children[i] as { type: string; children?: unknown[] };
     if (node.type !== 'blockquote' || !node.children || node.children.length === 0) continue;
-    const firstChild = node.children[0] as { type: string; children?: unknown[] };
+    const firstChild = node.children[0] as {
+      type: string;
+      children?: unknown[];
+    };
     if (firstChild.type !== 'paragraph' || !firstChild.children) continue;
-    const firstText = firstChild.children[0] as { type: string; value?: string };
+    const firstText = firstChild.children[0] as {
+      type: string;
+      value?: string;
+    };
     if (firstText.type !== 'text' || typeof firstText.value !== 'string') continue;
-    const m = firstText.value.match(/^\[!([A-Za-z]+)\]\s*/);
+    const m = firstText.value.match(/^\[!([A-Za-z]+)\][ \t]*/);
     if (!m) continue;
     const tag = m[1].toUpperCase();
     if (!CALLOUT_TYPES.has(tag)) continue;
-    // 剩余内容 = 标识之后的全部文本（同行标题 + 换行后的正文），slice 保留 \n 分隔
+    // 剩余内容 = 标识之后的全部文本（同行标题 + 换行后的正文），保留 \n 以支持标题/正文分段
     const remainingText = firstText.value.slice(m[0].length);
     if (remainingText) {
       firstText.value = remainingText;
@@ -230,6 +283,26 @@ function extractCallouts(tree: { type: string; children?: unknown[] }): void {
     node.type = 'callout';
     (node as { tag?: string }).tag = tag;
   }
+}
+
+/** docx 文本 run 后处理：清除 astral emoji（U+1F000–U+1FAFF）+ 变体选择符 + ZWJ；BMP 符号保留 */
+function stripEmoji(s: string): string {
+  let out = '';
+  let removed = false;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp >= 0x1f000 && cp <= 0x1faff) {
+      removed = true;
+      continue;
+    }
+    if (cp === 0xfe0e || cp === 0xfe0f || cp === 0x200d) {
+      removed = true;
+      continue;
+    }
+    out += ch;
+  }
+  if (!removed) return s;
+  return out.replace(/ {2,}/g, ' ').trim();
 }
 
 /** 行内子节点序列化（段落/标题内容），fmt 逐层传递（strong/em/link 等嵌套格式） */
@@ -248,18 +321,34 @@ function inlineToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, fmt
     case 'text': {
       let text = String(node.value ?? '');
       if (ctx.symbols) text = unguard(replaceSymbols(text)); // 哨兵还原 + 符号转换
+      text = stripEmoji(text); // docx 文本 run 清除 astral emoji（BMP 符号保留）
       return textToRuns(text, fmt);
     }
-    case 'strong': return inlineChildren(node.children as never[], ctx, { ...fmt, b: true });
-    case 'emphasis': return inlineChildren(node.children as never[], ctx, { ...fmt, i: true });
-    case 'delete': return inlineChildren(node.children as never[], ctx, { ...fmt, strike: true });
-    case 'inlineCode': return codeRun(String(node.value ?? ''), fmt);
+    case 'strong':
+      return inlineChildren(node.children as never[], ctx, { ...fmt, b: true });
+    case 'emphasis':
+      return inlineChildren(node.children as never[], ctx, { ...fmt, i: true });
+    case 'delete':
+      return inlineChildren(node.children as never[], ctx, {
+        ...fmt,
+        strike: true,
+      });
+    case 'inlineCode':
+      return codeRun(String(node.value ?? ''), fmt);
     case 'link': {
       const url = String(node.url ?? '');
       if (isExternal(url)) {
         const rId = `rId${ctx.nextRid++}`;
-        ctx.rels.push({ id: rId, type: 'hyperlink', target: url, external: true });
-        return inlineChildren(node.children as never[], ctx, { ...fmt, link: rId });
+        ctx.rels.push({
+          id: rId,
+          type: 'hyperlink',
+          target: url,
+          external: true,
+        });
+        return inlineChildren(node.children as never[], ctx, {
+          ...fmt,
+          link: rId,
+        });
       }
       // 内部锚点/相对链接：无关系可建，按普通文本输出（保留字面目标）
       return inlineChildren(node.children as never[], ctx, fmt);
@@ -269,10 +358,14 @@ function inlineToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, fmt
       if (mathNode.display) return '';
       return textToRuns(String(mathNode.value ?? ''), fmt);
     }
-    case 'image': return imageToXml(node as never, ctx, fmt);
-    case 'break': return `<w:r>${rPrXml(fmt)}<w:br/></w:r>`;
-    case 'html': return textToRuns(degradeHtml(String(node.value ?? '')), fmt);
-    case 'footnoteReference': return textToRuns(`[^${String(node.identifier ?? '')}]`, fmt);
+    case 'image':
+      return imageToXml(node as never, ctx, fmt);
+    case 'break':
+      return `<w:r>${rPrXml(fmt)}<w:br/></w:r>`;
+    case 'html':
+      return textToRuns(degradeHtml(String(node.value ?? '')), fmt);
+    case 'footnoteReference':
+      return textToRuns(`[^${String(node.identifier ?? '')}]`, fmt);
     default: {
       // 未知行内节点：尽力输出其文本内容，避免内容丢失
       const v = (node as { value?: unknown }).value;
@@ -312,7 +405,11 @@ function imageToXml(node: { url?: unknown; alt?: unknown }, ctx: Ctx, fmt: RunFm
   const rId = `rId${ctx.nextRid++}`;
   // 关系 Target 以 word/_rels/document.xml.rels 为基准（相对 word/），必须写 media/img-1.png；
   // 写 word/media/… 会被解析为 word/word/media/…，图片显示空白占位。
-  ctx.rels.push({ id: rId, type: 'image', target: mediaPath.replace(/^word\//, '') });
+  ctx.rels.push({
+    id: rId,
+    type: 'image',
+    target: mediaPath.replace(/^word\//, ''),
+  });
   // 固有尺寸换算：EMU = px * 9525（96dpi）；保持宽高比缩放进 imageWidthEmu
   const EMU_PER_PX = 9525;
   const intrinsic = readImageSize(data);
@@ -326,9 +423,7 @@ function imageToXml(node: { url?: unknown; alt?: unknown }, ctx: Ctx, fmt: RunFm
     } else {
       const fullW = intrinsic.width * EMU_PER_PX;
       w = Math.min(fullW, ctx.imageWidthEmu);
-      h = ctx.explicitImageHeight
-        ? ctx.imageHeightEmu
-        : Math.round(w * (intrinsic.height / intrinsic.width));
+      h = ctx.explicitImageHeight ? ctx.imageHeightEmu : Math.round(w * (intrinsic.height / intrinsic.width));
     }
   } else {
     w = ctx.imageWidthEmu;
@@ -372,7 +467,11 @@ function serializeList(node: { ordered?: unknown; start?: unknown; children?: un
   }
   let out = '';
   (node.children ?? []).forEach((item) => {
-    const it = item as { type?: string; checked?: unknown; children?: unknown[] };
+    const it = item as {
+      type?: string;
+      checked?: unknown;
+      children?: unknown[];
+    };
     if (it.type !== 'listItem') return;
     const checked = typeof it.checked === 'boolean' ? (it.checked ? '☑ ' : '☐ ') : '';
     const numPr = `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>`;
@@ -382,7 +481,10 @@ function serializeList(node: { ordered?: unknown; start?: unknown; children?: un
         out += serializeList(child as never, ctx, ilvl + 1);
         continue;
       }
-      out += blockToXml(child as never, ctx, { numPr, prefix: first ? checked : undefined });
+      out += blockToXml(child as never, ctx, {
+        numPr,
+        prefix: first ? checked : undefined,
+      });
       first = false;
     }
   });
@@ -393,7 +495,12 @@ function serializeList(node: { ordered?: unknown; start?: unknown; children?: un
 function splitParagraphAtBlockMath(
   node: { children: unknown[] },
   ctx: Ctx,
-  extra?: { numPr?: string; prefix?: string; style?: string; headerBold?: boolean },
+  extra?: {
+    numPr?: string;
+    prefix?: string;
+    style?: string;
+    headerBold?: boolean;
+  }
 ): string {
   const pStyle = extra?.style ?? (extra?.numPr ? 'ListParagraph' : '');
   const pPr = `${pStyle ? `<w:pStyle w:val="${pStyle}"/>` : ''}${extra?.numPr ?? ''}`;
@@ -421,49 +528,71 @@ function splitParagraphAtBlockMath(
   return out || `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}${prefix}</w:p>`;
 }
 
-/** callout 注入片段：左边框 + 背景色 + 左缩进（pBdr/shd/ind 顺序符合 pPr schema） */
-function calloutPPr(extra?: { callout?: { fill: string; border: string } }): string {
+/** callout 注入片段：左边框 + 背景色 + 可选 spacing + 缩进（pBdr/shd/spacing/ind 顺序符合 pPr schema） */
+function calloutPPr(extra?: { callout?: { fill: string; border: string }; headSpacing?: boolean }): string {
   if (!extra?.callout) return '';
   const { fill, border } = extra.callout;
-  return `<w:pBdr><w:left w:val="single" w:sz="18" w:space="4" w:color="${border}"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="${fill}"/><w:ind w:left="432" w:right="240"/>`;
+  const spacing = extra.headSpacing ? '<w:spacing w:after="0" w:line="240" w:lineRule="auto"/>' : '';
+  return `<w:pBdr><w:left w:val="single" w:sz="18" w:space="4" w:color="${border}"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="${fill}"/>${spacing}<w:ind w:left="432" w:right="240"/>`;
 }
 
-/** callout 首段：首个 \n 前为标题（加粗），其后正文保持常规格式 */
-function calloutHeadXml(children: unknown[], ctx: Ctx): string {
-  let out = '';
-  let headDone = false;
+/**
+ * callout 首段拆分：在第一个含 \n 的 text 节点处切分为 [headNodes, bodyNodes]。
+ * 若无 \n：全部作为 headNodes（加粗），bodyNodes 为空。
+ * 返回 { head, body } 两个 inline 节点数组。
+ */
+function splitCalloutHead(children: unknown[], ctx: Ctx): { head: unknown[]; body: unknown[] } {
+  const head: unknown[] = [];
+  const body: unknown[] = [];
+  let splitDone = false;
   for (const c of children) {
     const n = c as { type?: string; value?: string };
-    if (n.type === 'text' && typeof n.value === 'string' && !headDone) {
+    if (!splitDone && n.type === 'text' && typeof n.value === 'string') {
       const nl = n.value.indexOf('\n');
-      if (nl === -1) {
-        out += textToRuns(n.value, { b: true });
-        headDone = true;
-      } else {
-        const head = n.value.slice(0, nl);
-        const tail = n.value.slice(nl + 1);
-        if (head) out += textToRuns(head, { b: true });
-        if (tail) out += textToRuns(tail, {});
-        headDone = true;
+      if (nl !== -1) {
+        const headText = n.value.slice(0, nl);
+        const bodyText = n.value.slice(nl + 1);
+        if (headText) head.push({ type: 'text', value: headText });
+        if (bodyText) body.push({ type: 'text', value: bodyText });
+        splitDone = true;
+        continue;
       }
+      // 无 \n：整段作为 head
+      head.push(c);
+      continue;
+    }
+    if (splitDone) {
+      body.push(c);
     } else {
-      out += inlineToXml(c as never, ctx, headDone ? {} : { b: true });
+      head.push(c);
     }
   }
-  return out;
+  return { head, body };
 }
 
 /** 块级节点 → OOXML 段落/表格 XML */
-function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extra?: { numPr?: string; prefix?: string; style?: string; headerBold?: boolean; callout?: { fill: string; border: string } }): string {
+function blockToXml(
+  node: { type: string; [k: string]: unknown },
+  ctx: Ctx,
+  extra?: {
+    numPr?: string;
+    prefix?: string;
+    style?: string;
+    headerBold?: boolean;
+    callout?: { fill: string; border: string };
+  }
+): string {
   switch (node.type) {
     case 'heading': {
       const depth = Math.min(6, Math.max(1, Number(node.depth) || 1));
       const style = `Heading${depth}`;
       const hasBlockMath = (node.children as unknown[])?.some(
-        (c) => (c as { type?: string }).type === 'math' && (c as { display?: boolean }).display,
+        (c) => (c as { type?: string }).type === 'math' && (c as { display?: boolean }).display
       );
       if (hasBlockMath) {
-        return splitParagraphAtBlockMath(node as { children: unknown[] }, ctx, { style });
+        return splitParagraphAtBlockMath(node as { children: unknown[] }, ctx, {
+          style,
+        });
       }
       return `<w:p><w:pPr><w:pStyle w:val="${style}"/>${calloutPPr(extra)}</w:pPr>${inlineChildren(node.children as never[], ctx)}</w:p>`;
     }
@@ -473,12 +602,15 @@ function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extr
       const prefix = extra?.prefix ? plainRun(extra.prefix, {}) : '';
       const headerFmt = extra?.headerBold ? headerBoldFmt({}) : {};
       const hasBlockMath = (node.children as unknown[])?.some(
-        (c) => (c as { type?: string }).type === 'math' && (c as { display?: boolean }).display,
+        (c) => (c as { type?: string }).type === 'math' && (c as { display?: boolean }).display
       );
       if (!hasBlockMath) {
         return `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}${prefix}${inlineChildren(node.children as never[], ctx, headerFmt)}</w:p>`;
       }
-      return splitParagraphAtBlockMath(node as { children: unknown[] }, ctx, { ...extra, style: pStyle });
+      return splitParagraphAtBlockMath(node as { children: unknown[] }, ctx, {
+        ...extra,
+        style: pStyle,
+      });
     }
     case 'code': {
       // 块级代码：每行一段（CodeBlock 样式，浅灰背景），保留空白；语言标注 [lang] 不作为文字输出
@@ -487,7 +619,8 @@ function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extr
         .map((line) => `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:t xml:space="preserve">${esc(line)}</w:t></w:r></w:p>`)
         .join('');
     }
-    case 'list': return serializeList(node as never, ctx, 0);
+    case 'list':
+      return serializeList(node as never, ctx, 0);
     case 'blockquote': {
       return (node.children as never[]).map((c) => blockToXml(c as never, ctx, { style: 'Quote' })).join('');
     }
@@ -497,20 +630,34 @@ function blockToXml(node: { type: string; [k: string]: unknown }, ctx: Ctx, extr
       const children = (node.children as never[]) ?? [];
       const first = children[0] as { type?: string; children?: unknown[] } | undefined;
       const rest = first && first.type === 'paragraph' ? children.slice(1) : children;
+      const pPr = calloutPPr({ callout: { fill, border } });
       let out = '';
       if (first && first.type === 'paragraph' && (first.children?.length ?? 0) > 0) {
-        out += `<w:p><w:pPr>${calloutPPr({ callout: { fill, border } })}</w:pPr>${calloutHeadXml(first.children, ctx)}</w:p>`;
+        const { head, body } = splitCalloutHead(first.children, ctx);
+        if (head.length > 0) {
+          const headPPr = calloutPPr({
+            callout: { fill, border },
+            headSpacing: true,
+          });
+          out += `<w:p><w:pPr>${headPPr}</w:pPr>${inlineChildren(head, ctx, { b: true })}</w:p>`;
+        }
+        if (body.length > 0) {
+          out += `<w:p><w:pPr>${pPr}</w:pPr>${inlineChildren(body, ctx, {})}</w:p>`;
+        }
       }
       out += rest.map((c) => blockToXml(c as never, ctx, { callout: { fill, border } })).join('');
       return out;
     }
     case 'thematicBreak': {
-      // 水平线：段落底部边框
-      return '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr></w:pPr></w:p>';
+      // 水平线：v1 不输出（--- 不产生任何内容）
+      return '';
     }
-    case 'table': return tableToXml(node as never, ctx);
-    case 'html': return textToRuns(degradeHtml(String(node.value ?? '')), {});
-    case 'footnoteDefinition': return ''; // 脚注定义不输出（引用已降级为 [^label] 文本）
+    case 'table':
+      return tableToXml(node as never, ctx);
+    case 'html':
+      return textToRuns(degradeHtml(String(node.value ?? '')), {});
+    case 'footnoteDefinition':
+      return ''; // 脚注定义不输出（引用已降级为 [^label] 文本）
     default: {
       // 未知块节点：尽力输出其文本内容，避免内容丢失
       const v = (node as { value?: unknown }).value;
@@ -524,29 +671,52 @@ function tableToXml(node: { children?: unknown[] }, ctx: Ctx): string {
   const rows = (node.children ?? []).filter((r) => (r as { type?: string }).type === 'tableRow');
   const colCount = Math.max(1, ...rows.map((r) => (r as { children?: unknown[] }).children?.length ?? 0));
   const colWidths = computeTableColumnWidths(rows as never, colCount);
-  let out = '<w:tbl><w:tblPr><w:tblStyle w:val="Table"/><w:tblW w:w="9026" w:type="dxa"/><w:tblLayout w:type="fixed"/>';
-  out += '<w:tblBorders>' + ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']
-    .map((b) => `<w:${b} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>`).join('') + '</w:tblBorders>';
-  out += '<w:tblCellMar><w:top w:w="57" w:type="dxa"/><w:start w:w="108" w:type="dxa"/><w:bottom w:w="57" w:type="dxa"/><w:end w:w="108" w:type="dxa"/></w:tblCellMar>';
+  const borders = ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'];
+  const tblBorders =
+    '<w:tblBorders>' + borders.map((b) => `<w:${b} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>`).join('') + '</w:tblBorders>';
+  let out = '<w:tbl><w:tblPr><w:tblStyle w:val="Table"/><w:tblW w:w="9026" w:type="dxa"/>' + tblBorders + '<w:tblLayout w:type="fixed"/>';
+  out +=
+    '<w:tblCellMar><w:top w:w="57" w:type="dxa"/><w:start w:w="108" w:type="dxa"/><w:bottom w:w="57" w:type="dxa"/><w:end w:w="108" w:type="dxa"/></w:tblCellMar>';
   out += '<w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/></w:tblPr>';
-  out += `<w:tblGrid>${colWidths.map((w) => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>`;
+  let gridCols = '';
+  for (let gi = 0; gi < colWidths.length; gi++) {
+    gridCols += '<w:gridCol w:w="' + colWidths[gi] + '"/>';
+  }
+  out += '<w:tblGrid>' + gridCols + '</w:tblGrid>';
   rows.forEach((row, ri) => {
     out += '<w:tr>';
     (row as { children?: unknown[] }).children?.forEach((cell, ci) => {
       const isHeader = ri === 0;
       out += '<w:tc><w:tcPr>';
-      out += `<w:tcW w:w="${colWidths[ci]}" w:type="dxa"/>`;
-      out += '<w:vAlign w:val="center"/>';
+      out += '<w:tcW w:w="' + colWidths[ci] + '" w:type="dxa"/>';
       if (isHeader) out += '<w:shd w:val="clear" w:color="auto" w:fill="F2F2F2"/>';
+      out += '<w:vAlign w:val="center"/>';
       out += '</w:tcPr>';
       const blocks = (cell as { children?: unknown[] }).children ?? [];
       if (blocks.length === 0) {
         out += '<w:p/>';
-      } else if (isHeader) {
-        // 表头单元格：行内子节点序列化时注入 b:true，保留段落/行内结构（strong/em/inlineCode 嵌套格式）
-        out += `<w:p><w:pPr><w:pStyle w:val="Table"/></w:pPr>${inlineChildren(blocks, ctx, { b: true })}</w:p>`;
       } else {
-        out += blocks.map((b) => blockToXml(b as never, ctx, { style: 'Table' })).join('');
+        const hasBlock = blocks.some((b) => {
+          const t = (b as { type?: string }).type;
+          return (
+            t === 'paragraph' ||
+            t === 'list' ||
+            t === 'table' ||
+            t === 'code' ||
+            t === 'heading' ||
+            t === 'blockquote' ||
+            t === 'callout' ||
+            t === 'thematicBreak'
+          );
+        });
+        if (!hasBlock) {
+          const cellFmt = isHeader ? { b: true } : {};
+          out += '<w:p><w:pPr><w:pStyle w:val="Table"/>' + SPACING + '</w:pPr>' + inlineChildren(blocks, ctx, cellFmt) + '</w:p>';
+        } else if (isHeader) {
+          out += '<w:p><w:pPr><w:pStyle w:val="Table"/>' + SPACING + '</w:pPr>' + inlineChildren(blocks, ctx, { b: true }) + '</w:p>';
+        } else {
+          out += blocks.map((b) => blockToXml(b as never, ctx, { style: 'Table' })).join('');
+        }
       }
       out += '</w:tc>';
     });
@@ -555,12 +725,13 @@ function tableToXml(node: { children?: unknown[] }, ctx: Ctx): string {
   return out + '</w:tbl>';
 }
 
-/** 内容宽度启发式：CJK 计 2 / ASCII 计 1，×120 DXA，min 800，总宽超表宽 9026 等比压缩，全空列等分兜底 */
+/** 内容宽度启发式：CJK 计 2 / ASCII 计 1，×DXA_PER_UNIT，min 800，总宽精确等于 9026 */
 function computeTableColumnWidths(rows: { children?: unknown[] }[], colCount: number): number[] {
   const DXA_PER_UNIT = 120;
+  const CELL_PADDING = 220;
   const MIN_COL_W = 800;
   const MAX_TOTAL = 9026; // 页宽 11906 - 左右页边距 1440×2
-  const widths: number[] = new Array(colCount).fill(0);
+  const desired: number[] = new Array(colCount).fill(0);
   let hasContent = false;
   for (let ci = 0; ci < colCount; ci++) {
     let maxUnits = 0;
@@ -573,51 +744,78 @@ function computeTableColumnWidths(rows: { children?: unknown[] }[], colCount: nu
       const units = textWidthUnits(text);
       if (units > maxUnits) maxUnits = units;
     }
-    widths[ci] = Math.max(MIN_COL_W, maxUnits * DXA_PER_UNIT);
+    desired[ci] = Math.max(MIN_COL_W, maxUnits * DXA_PER_UNIT + CELL_PADDING);
   }
   if (!hasContent) {
     const eq = Math.floor(MAX_TOTAL / colCount);
     return new Array(colCount).fill(eq);
   }
-  const total = widths.reduce((a, b) => a + b, 0);
-  if (total > MAX_TOTAL) {
-    const scale = MAX_TOTAL / total;
-    const scaled = widths.map((w) => Math.max(MIN_COL_W, Math.floor(w * scale)));
-    let sum = scaled.reduce((a, b) => a + b, 0);
-    // 精确修正：若取整后总和仍 > MAX_TOTAL，从最宽列逐次 -1
-    while (sum > MAX_TOTAL) {
-      let best = -1;
-      for (let i = 0; i < scaled.length; i++) {
-        if (scaled[i] > MIN_COL_W && (best === -1 || scaled[i] > scaled[best])) best = i;
-      }
-      if (best === -1) break; // 全列触底 800，无法再减
-      scaled[best]--;
-      sum--;
-    }
-    // 取整导致总和 < MAX_TOTAL，差值加到首列
-    if (sum < MAX_TOTAL) scaled[0] += MAX_TOTAL - sum;
-    return scaled;
-  }
-  if (total < MAX_TOTAL) {
-    // 内容宽度不足页宽时，按比例放大至满宽（fixed 布局按 gridCol 渲染，不满宽会留白）
-    const scale = MAX_TOTAL / total;
-    const scaled = widths.map((w) => Math.round(w * scale));
-    // 修正取整误差，使总和精确等于 MAX_TOTAL（差值加到首列）
+  const totalDesired = desired.reduce((a, b) => a + b, 0);
+  if (totalDesired <= MAX_TOTAL) {
+    // 内容不足页宽：按比例放大至满宽
+    const scale = MAX_TOTAL / totalDesired;
+    const scaled = desired.map((w) => Math.round(w * scale));
+    // 取整残差加到最宽列
     const diff = MAX_TOTAL - scaled.reduce((a, b) => a + b, 0);
-    scaled[0] += diff;
+    let widest = 0;
+    for (let i = 1; i < scaled.length; i++) {
+      if (desired[i] > desired[widest]) widest = i;
+    }
+    scaled[widest] += diff;
     return scaled;
   }
-  return widths;
+  // 内容超页宽：仅压缩超出 min 的部分
+  const aboveMinTotal = totalDesired - colCount * MIN_COL_W;
+  const budget = MAX_TOTAL - colCount * MIN_COL_W;
+  if (budget <= 0) {
+    // 列数过多导致 min*colCount 超过页宽：退化为按内容比例缩放（保证总和 9026、宽度为正）
+    const scaled = desired.map((w) => Math.max(1, Math.round((w * MAX_TOTAL) / totalDesired)));
+    const diff2 = MAX_TOTAL - scaled.reduce((a, b) => a + b, 0);
+    let widest2 = 0;
+    for (let i = 1; i < scaled.length; i++) {
+      if (desired[i] > desired[widest2]) widest2 = i;
+    }
+    scaled[widest2] += diff2;
+    return scaled;
+  }
+  if (aboveMinTotal <= 0) {
+    // 所有列已触底 min：等分，残差加到首列
+    const eq = Math.floor(MAX_TOTAL / colCount);
+    const result = new Array(colCount).fill(eq);
+    result[0] += MAX_TOTAL - eq * colCount;
+    return result;
+  }
+  const scaled = desired.map((w) => MIN_COL_W + Math.round(((w - MIN_COL_W) * budget) / aboveMinTotal));
+  // 取整残差加到最宽列
+  const diff = MAX_TOTAL - scaled.reduce((a, b) => a + b, 0);
+  let widest = 0;
+  for (let i = 1; i < scaled.length; i++) {
+    if (desired[i] > desired[widest]) widest = i;
+  }
+  scaled[widest] += diff;
+  return scaled;
 }
 
-/** 提取单元格内所有文本（递归） */
+/** 提取单元格内所有文本（递归）：text 节点 + value 类型（inlineCode/math/image-alt） */
 function extractCellText(children: unknown[]): string {
   let out = '';
   for (const child of children) {
-    const n = child as { type?: string; value?: unknown; children?: unknown[] };
+    const n = child as {
+      type?: string;
+      value?: unknown;
+      children?: unknown[];
+      alt?: unknown;
+    };
     if (n.type === 'text' && typeof n.value === 'string') {
       out += n.value;
-    } else if (n.children) {
+    } else if (n.type === 'inlineCode' && typeof n.value === 'string') {
+      out += n.value;
+    } else if (n.type === 'math' && typeof n.value === 'string') {
+      out += n.value;
+    } else if (n.type === 'image' && typeof n.alt === 'string') {
+      out += n.alt;
+    }
+    if (n.children) {
       out += extractCellText(n.children);
     }
   }
@@ -659,17 +857,22 @@ const EXT_CONTENT_TYPE = new Map<string, string>([
 /** [Content_Types].xml：声明全部部件类型（含实际用到的图片扩展名） */
 function contentTypesXml(ctx: Ctx): string {
   const usedExt = new Set(ctx.media.map((m) => m.path.split('.').pop()!.toLowerCase()));
-  const defaults = ['rels', 'xml', ...usedExt].map((ext) => {
-    const ct = EXT_CONTENT_TYPE.get(ext) ?? 'application/octet-stream';
-    return `<Default Extension="${ext}" ContentType="${ct}"/>`;
-  }).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-${defaults}
-<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
-<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
-</Types>`;
+  const defaults = ['rels', 'xml', ...usedExt]
+    .map((ext) => {
+      const ct = EXT_CONTENT_TYPE.get(ext) ?? 'application/octet-stream';
+      return '<Default Extension="' + ext + '" ContentType="' + ct + '"/>';
+    })
+    .join('');
+  return (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n' +
+    defaults +
+    '\n' +
+    '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>\n' +
+    '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>\n' +
+    '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>\n' +
+    '</Types>'
+  );
 }
 
 function documentXml(bodyXml: string): string {
@@ -695,11 +898,13 @@ function documentRelsXml(ctx: Ctx): string {
     { id: 'rId2', type: 'numbering', target: 'numbering.xml' },
     ...ctx.rels,
   ];
-  const items = rels.map((r) => {
-    const type = REL_TYPE_URI.get(r.type) ?? 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
-    const mode = r.external ? ' TargetMode="External"' : '';
-    return `<Relationship Id="${r.id}" Type="${type}" Target="${esc(r.target)}"${mode}/>`;
-  }).join('');
+  const items = rels
+    .map((r) => {
+      const type = REL_TYPE_URI.get(r.type) ?? 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
+      const mode = r.external ? ' TargetMode="External"' : '';
+      return `<Relationship Id="${r.id}" Type="${type}" Target="${esc(r.target)}"${mode}/>`;
+    })
+    .join('');
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 ${items}
@@ -732,35 +937,38 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:basedOn w:val="DefaultParagraphFont"/><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr></w:style>
 </w:styles>`;
 
-// 编号定义：abstractNum 0 = 项目符号（ul），abstractNum 1 = 十进制（ol），各 8 级嵌套
-// numId 1 固定绑定 abstractNum 0；每个 ol 列表实例独占 numId（≥2，经 ctx.numList 声明），互不连续计数；
-// 自定义起始号经 lvlOverride/startOverride 表达（段落 numPr 内无 startOverride 元素，放置无效）。
+// 编号定义：abstractNum 0 = 项目符号（ul，numId 1）；每个 ol 独占 abstractNum（id == numId ≥2）
+// WPS 对共用 abstractNum 的 numId 会跨实例续计数，故每个 ol 必须拥有独立 abstractNum。
 function numberingXml(ctx: Ctx): string {
-  const nums = [
-    '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>',
-    ...ctx.numList.map(({ numId, start }) =>
-      start !== 1
-        ? `<w:num w:numId="${numId}"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="${start}"/></w:lvlOverride></w:num>`
-        : `<w:num w:numId="${numId}"><w:abstractNumId w:val="1"/></w:num>`),
-  ];
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:numbering xmlns:w="${NS.w}">
-<w:abstractNum w:abstractNumId="0">
-<w:multiLevelType w:val="hybridMultilevel"/>
-${[0, 1, 2, 3, 4, 5, 6, 7].map((lvl) => {
-    const bullet = ['•', '◦', '▪', '•', '◦', '▪', '•', '◦'][lvl];
-    const left = 720 + lvl * 720;
-    return `<w:lvl w:ilvl="${lvl}"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="${bullet}"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${left}" w:hanging="360"/></w:pPr></w:lvl>`;
-  }).join('')}
-</w:abstractNum>
-<w:abstractNum w:abstractNumId="1">
-<w:multiLevelType w:val="hybridMultilevel"/>
-${[0, 1, 2, 3, 4, 5, 6, 7].map((lvl) => {
+  const decimalLvl = (lvl: number): string => {
     const lvlText = Array.from({ length: lvl + 1 }, (_, i) => `%${i + 1}`).join('.') + '.';
     const left = 720 + lvl * 720;
     return `<w:lvl w:ilvl="${lvl}"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="${lvlText}"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${left}" w:hanging="360"/></w:pPr></w:lvl>`;
-  }).join('')}
-</w:abstractNum>
+  };
+  const abstractNums = [
+    '<w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="hybridMultilevel"/>' +
+      [0, 1, 2, 3, 4, 5, 6, 7]
+        .map((lvl) => {
+          const bullet = ['•', '◦', '▪', '•', '◦', '▪', '•', '◦'][lvl];
+          const left = 720 + lvl * 720;
+          return `<w:lvl w:ilvl="${lvl}"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="${bullet}"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${left}" w:hanging="360"/></w:pPr></w:lvl>`;
+        })
+        .join('') +
+      '</w:abstractNum>',
+    ...ctx.numList.map(
+      ({ numId }) =>
+        `<w:abstractNum w:abstractNumId="${numId}"><w:multiLevelType w:val="hybridMultilevel"/>${[0, 1, 2, 3, 4, 5, 6, 7].map(decimalLvl).join('')}</w:abstractNum>`
+    ),
+  ];
+  const nums = ctx.numList.map(({ numId, start }) =>
+    start !== 1
+      ? `<w:num w:numId="${numId}"><w:abstractNumId w:val="${numId}"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="${start}"/></w:lvlOverride></w:num>`
+      : `<w:num w:numId="${numId}"><w:abstractNumId w:val="${numId}"/></w:num>`
+  );
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="${NS.w}">
+${abstractNums.join('\n')}
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
 ${nums.join('\n')}
 </w:numbering>`;
 }
@@ -776,9 +984,16 @@ ${nums.join('\n')}
 export function toDocx(files: Map<string, Uint8Array>, opts: DocxOptions = {}, onWarning?: (msg: string) => void): Uint8Array {
   // 入口解析与 render.ts 完全一致（manifest.entrypoint 优先，否则 lenient 推断）
   const manifestRaw = files.get('manifest.json');
-  let manifest: { entrypoint?: string; extensions?: { include?: boolean; symbols?: 'off' | 'core' | 'extended' }; [k: string]: unknown };
-  try { manifest = manifestRaw ? JSON.parse(new TextDecoder().decode(manifestRaw)) : {}; }
-  catch (e) { throw new MdeError(E.E302, `manifest.json 不是合法 JSON: ${(e as Error).message}`); }
+  let manifest: {
+    entrypoint?: string;
+    extensions?: { include?: boolean; symbols?: 'off' | 'core' | 'extended' };
+    [k: string]: unknown;
+  };
+  try {
+    manifest = manifestRaw ? JSON.parse(new TextDecoder().decode(manifestRaw)) : {};
+  } catch (e) {
+    throw new MdeError(E.E302, `manifest.json 不是合法 JSON: ${(e as Error).message}`);
+  }
   const hasManifest = manifestRaw !== undefined;
   const entry: string = hasManifest && manifest.entrypoint ? manifest.entrypoint : inferEntrypoint(files);
   assertMarkdownEntrypoint(entry); // 非 Markdown 入口在此拒绝（E303），与 render.ts 对齐
@@ -793,6 +1008,8 @@ export function toDocx(files: Map<string, Uint8Array>, opts: DocxOptions = {}, o
   // 管线顺序与 render.ts 一致：include 展开（解析前）→ <<< 降级 → 哨兵保护 → 解析
   const raw = new TextDecoder().decode(body);
   let expanded = manifest.extensions?.include === false ? raw : expand(files, entry).text;
+  // 文档头部 YAML frontmatter 剥离（先于 <<< 降级，与 render.ts 同顺序）
+  expanded = expanded.replace(FRONTMATTER_RE, '');
   // 未被展开的指令（缩进的、或 include 关闭时）必须作为可见文本降级（与 render.ts 相同处理）
   expanded = expanded.replace(/^(\s*)<<</gm, '$1&lt;&lt;&lt;');
 
