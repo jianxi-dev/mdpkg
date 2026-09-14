@@ -403,15 +403,16 @@ test('Wave 1.1 未闭合 $ 不崩溃且保持原样', async () => {
 
 // ============ Wave 1.2 Callout 识别 ============
 
-test('Wave 1.2 已知键 callout：> [!TIP] 输出带标签的 callout 块', async () => {
+test('Wave 1.2 已知键 callout：> [!TIP] 去标识输出带底纹与左边框的 callout 块', async () => {
   const body = '> [!TIP]\n> 提示内容\n';
   const out = await unpackDocx(toDocx(pkg(body)));
   const doc = dec.decode(out.get('word/document.xml')!);
   const text = docxText(doc);
-  assert.ok(text.includes('TIP'), '应含 TIP 标签');
+  assert.ok(!text.includes('TIP'), '不应残留 TIP 标识文本');
+  assert.ok(!text.includes('[!'), '不应残留 [! 标识');
   assert.ok(text.includes('提示内容'), 'callout 内容应保真');
-  assert.ok(doc.includes('<w:pBdr>'), 'callout 应有左边框');
-  assert.ok(doc.includes('<w:shd'), 'callout 应有底纹');
+  assert.ok(doc.includes('<w:pBdr><w:left w:val="single" w:sz="18"'), 'callout 应有加粗左边框');
+  assert.ok(doc.includes('w:fill="ECF7EC"'), 'TIP 应使用类型背景色');
 });
 
 test('Wave 1.2 未知键降级：> [!FOO] 保持 blockquote', async () => {
@@ -471,16 +472,14 @@ test('Wave 1.3 嵌套任务列表：子项也使用字形', async () => {
 
 // ============ Wave 2.1 代码块语言标注 ============
 
-test('Wave 2.1 有 lang：```ts 首行前插 [ts] 灰色标注 run', async () => {
-  const body = '```ts\nconst x = 1;\n```\n';
+test('Wave 2.1 有 lang：```ts 不输出 [ts] 语言标注文本', async () => {
+  const body = '```ts\nconst a = 1;\n```\n';
   const out = await unpackDocx(toDocx(pkg(body)));
   const doc = dec.decode(out.get('word/document.xml')!);
   const text = docxText(doc);
-  assert.ok(text.includes('[ts]'), '应含 [ts] 标注');
-  assert.ok(text.includes('const x = 1;'), '代码内容应保真');
-  assert.ok(doc.includes('<w:color w:val="808080"/>'), '标注应为灰色');
-  assert.ok(doc.includes('<w:sz w:val="18"/>'), '标注应为 9pt');
-  assert.ok(doc.includes('<w:pStyle w:val="CodeBlock"/>'), '应保留 CodeBlock 样式');
+  assert.ok(!text.includes('[ts]'), '不应输出 [ts] 语言标注');
+  assert.ok(doc.includes('<w:pStyle w:val="CodeBlock"/>'), '应使用 CodeBlock 样式（含背景色）');
+  assert.ok(text.includes('const a = 1;'), '代码内容应保真');
 });
 
 test('Wave 2.1 无 lang：纯代码块无标注', async () => {
@@ -736,4 +735,97 @@ test('Review 修复 显式 imageHeightEmu 等于默认值时优先使用显式�
   // 若使用显式值：h = 4114800
   // 只有 explicitImageHeight 标志正确时才会用 4114800
   assert.ok(doc.includes('cy="4114800"'), '显式 imageHeightEmu 等于默认值时仍应优先使用显式值');
+});
+
+// ============ 缺陷修复回归（issue #9）：docx 导出 8 项 ============
+
+test('回归#9-1 图片：rels Target 相对 word/（media/img-1.png），非 word/media/…', async () => {
+  const body = '![图](assets/a.png)\n';
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/a.png': PNG })));
+  const rels = dec.decode(out.get('word/_rels/document.xml.rels')!);
+  assert.ok(rels.includes('Target="media/img-1.png"'), 'image 关系 Target 应相对 word/');
+  assert.ok(!rels.includes('Target="word/media/'), '不应出现 word/media/ 绝对形式');
+});
+
+test('回归#9-2 列表：多个有序列表各自独立 numId 实例', async () => {
+  const body = '1. 甲\n2. 乙\n\n分隔段\n\n1. 丙\n2. 丁\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const numbering = dec.decode(out.get('word/numbering.xml')!);
+  assert.ok(doc.includes('<w:numId w:val="2"/>'), '第一个 ol 应使用 numId 2');
+  assert.ok(doc.includes('<w:numId w:val="3"/>'), '第二个 ol 应使用 numId 3');
+  assert.ok(numbering.includes('<w:num w:numId="2">'), 'numbering.xml 应声明 numId 2 实例');
+  assert.ok(numbering.includes('<w:num w:numId="3">'), 'numbering.xml 应声明 numId 3 实例');
+  assert.ok(!doc.includes('<w:startOverride'), '段落 numPr 内不应有 startOverride（无效元素）');
+});
+
+test('回归#9-2b 列表：自定义起始号经 numbering.xml lvlOverride 表达', async () => {
+  const body = '3. 丙\n4. 丁\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const numbering = dec.decode(out.get('word/numbering.xml')!);
+  assert.ok(numbering.includes('<w:startOverride w:val="3"/>'), '起始号应写入 numbering.xml lvlOverride');
+});
+
+test('回归#9-3 行距：docDefaults 单倍（line=240）', async () => {
+  const out = await unpackDocx(toDocx(pkg('正文\n')));
+  const styles = dec.decode(out.get('word/styles.xml')!);
+  assert.ok(styles.includes('<w:spacing w:after="160" w:line="240" w:lineRule="auto"/>'), 'docDefaults 应为 line=240');
+  assert.ok(!styles.includes('w:line="360"'), '不应再出现 1.5 倍行距');
+});
+
+test('回归#9-4 软换行：\\n 并入空格而非 w:br（与 HTML 语义一致）', async () => {
+  const body = '第一行\n第二行\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(!doc.includes('<w:br/>'), '软换行不应输出 w:br');
+  assert.ok(text.includes('第一行 第二行'), '软换行应合并为空格');
+});
+
+test('回归#9-4b 硬换行（行尾两空格）仍输出 w:br', async () => {
+  const body = '第一行  \n第二行\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('<w:br/>'), '硬换行应保留 w:br');
+});
+
+test('回归#9-5 表格：tblW 满宽 dxa + fixed 布局', async () => {
+  const body = '| 列A | 列B |\n| --- | --- |\n| 甲 | 乙 |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('<w:tblW w:w="9026" w:type="dxa"/>'), '表格应满页宽（9026 dxa）');
+  assert.ok(doc.includes('<w:tblLayout w:type="fixed"/>'), '表格应固定布局');
+});
+
+test('回归#9-6 表格：单元格垂直居中 + 内边距', async () => {
+  const body = '| 列A | 列B |\n| --- | --- |\n| 甲 | 乙 |\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('<w:vAlign w:val="center"/>'), '单元格应垂直居中');
+  assert.ok(doc.includes('<w:tblCellMar><w:top w:w="57" w:type="dxa"/><w:start w:w="108" w:type="dxa"/><w:bottom w:w="57" w:type="dxa"/><w:end w:w="108" w:type="dxa"/></w:tblCellMar>'), '应声明单元格内边距');
+});
+
+test('回归#9-7 callout 同行标题：> [!tip] 实用提示 → 去标识、标题加粗、类型背景色', async () => {
+  const body = '> [!tip] 实用提示\n> Markdown 是最通用的文档格式。\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  const text = docxText(doc);
+  assert.ok(!text.includes('[!tip]'), '不应残留 [!. ] 标识');
+  assert.ok(!text.includes('TIP'), '不应输出 TIP 标签文本');
+  assert.ok(text.includes('实用提示'), '标题文本应保真');
+  assert.ok(text.includes('Markdown 是最通用的文档格式'), '正文应保真');
+  assert.ok(doc.includes('w:fill="ECF7EC"'), 'TIP 应使用类型背景色');
+  const titleRun = doc.match(/<w:r><w:rPr><w:b\/><\/w:rPr><w:t[^>]*>实用提示<\/w:t><\/w:r>/);
+  assert.ok(titleRun, '标题 run 应加粗');
+  const bodyBold = doc.match(/<w:r><w:rPr><w:b\/><\/w:rPr><w:t[^>]*>Markdown<\/w:t>/);
+  assert.ok(!bodyBold, '同行正文 run 不应加粗（仅标题加粗）');
+});
+
+test('回归#9-7b callout 类型色：warning 黄 / note 蓝 / quote 灰', async () => {
+  const body = '> [!warning] 注意\n> 内容\n\n> [!note] 说明\n> 内容\n\n> [!quote] 引文\n> 内容\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('w:fill="FCF8E8"'), 'warning 应使用黄色背景');
+  assert.ok(doc.includes('w:fill="F0F7FA"'), 'note 应使用蓝色背景');
+  assert.ok(doc.includes('w:fill="F5F5F5"'), 'quote 应使用灰色背景');
 });
