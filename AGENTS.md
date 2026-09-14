@@ -102,3 +102,4 @@ git status                 # 工作区状态（PLAN_MERGED.md / spec/ / packages
 - 已知缺口：`--fetch` 未提供（规范已标注为参考实现 v1 不提供）；M7（VS Code 插件）在采用可行性验证前不启动。
 - 定位：先自用后标准化，3 个月止损判据；VS Code 插件（M7）在采用可行性验证前不启动。
 - 2026-08-31：MDE → mdpkg 统一改名完成（错误码 MDPKG-EXXX，manifest 标识字段 format:"mdpkg"），三仓库拆分：mdpkg（本仓库，格式+CLI）/ md-bundle（网页工具占位，新建）/ clairis（桌面旗舰）
+> 收尾铁律：合并后本地工作区停留在 main（详见 docs/agents/incident-merge-local-workspace.md）
