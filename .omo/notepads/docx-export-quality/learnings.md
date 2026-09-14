@@ -62,3 +62,30 @@
 - **mermaid 描述修正**：spec 原写「按代码块 + 语言标注降级呈现」与实现不符；实现与 HTML 路径一致（mermaid 不插语言标注）。已修正 spec 为「按普通代码块降级呈现（不插语言标注）」。
 - **缺失资源不警告**：spec 补充说明「渲染路径不执行完整校验，不触发警告」，与 `render.ts` 的 `if (!data) return` 语义对齐。
 - **新增场景**：空文档回归、mermaid 降级、缺失资源静默降级、表格表头加粗 + 列宽启发式、callout 视觉细节（左边框 + 底纹）。
+
+## 第二轮修复（2026-09-15，issue #16 / PR #17）
+
+### 表格单元格序列化（根因修正，此前认知不完整）
+
+- **tableCell 子节点是 mdast 行内节点（PhrasingContent），不是 paragraph**：表头路径用 `inlineChildren` 所以正常；**数据单元格若走 `blockToXml ∘ 逐子节点`**，`strong` 会落进 default 分支（无 value）被整体丢弃 → 纯 `**P0**` 单元格空白；`text+inlineCode+text` 会被拆成 3 个段落（"错行"观感）。修复：数据单元格统一「单段落 + inlineChildren」，块级节点防御性回退。
+- **extractCellText 必须采集 value 型节点**（inlineCode/math/image-alt），否则列宽需求被低估到 min 800。
+
+### WPS 编号续号
+
+- **多个 numId 共享同一 abstractNum 时，WPS 会跨列表接续计数**（`lvlOverride startOverride` 也未必被尊重）。稳妥方案：**每个有序列表独占 abstractNum**（abstractNumId == numId）+ start≠1 时保留 lvlOverride。bullets 保持 abstractNum 0 / numId 1。
+
+### 列宽算法 v2（内容需求导向）
+
+- `desired = max(800, maxUnits×120 + 220 padding)`；Σ≤9026 等比放大；Σ>9026 仅压缩「超出 min 的部分」（min 起步 + 超出等比）；**列数≥12 时 budget=9026-800n 为负 → 必须退化为比例缩放**（否则出现 226 twips 的荒谬列宽）。
+- 残余换行是内容总量超页宽时的固有现象（如 T7 日期列 ~10 twips 级别差额）。
+
+### docx 产物来源法医鉴别（重要！）
+
+- **mdpkg 产物**：极简部件（document/styles/numbering + 可选 media），无 theme/comments/bookmarks。
+- **Pandoc 产物指纹**：BlockText/BodyText/FirstParagraph/SourceCode 等参考样式集、theme1.xml、comments.xml、bookmarks、`w:hint="eastAsia"` 切 run、numId 1000+、docProps/custom.xml 携带 frontmatter 键。
+- 鉴别命令：`xattr -l`（kMDItemWhereFroms 看下载源）、`mdls`、`docProps/core.xml` 的 dcterms:created、`mdtime`/`stat` birth×mtime 对比。**收到"导出产物"反馈时，先验明产出工具再归因。**
+
+### 格式化陷阱（勿踩）
+
+- 仓库根 `.prettierrc`（`singleQuote:false`、printWidth 80）**不适用于 src 手写风格（单引号、长行）**；`scripts/verify.sh` 的 prettier 检查只覆盖少数根文件。
+- **对 `packages/mdpkg/src/*.ts`、`test/*.ts` 跑仓库根 `prettier --write` 会引发全文件重排（引号+换行），diff 噪声 ~3 倍**。恢复只能近似（`--single-quote --print-width 140` 仍有残余换行差异）。手写风格即规范，不要自动化格式化这些文件。
