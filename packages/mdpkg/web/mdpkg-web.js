@@ -23964,7 +23964,26 @@ function computeTableColumnWidths(rows, colCount) {
   const total = widths.reduce((a, b) => a + b, 0);
   if (total > MAX_TOTAL) {
     const scale = MAX_TOTAL / total;
-    return widths.map((w) => Math.max(MIN_COL_W, Math.floor(w * scale)));
+    const scaled = widths.map((w) => Math.max(MIN_COL_W, Math.floor(w * scale)));
+    let sum = scaled.reduce((a, b) => a + b, 0);
+    while (sum > MAX_TOTAL) {
+      let best = -1;
+      for (let i2 = 0; i2 < scaled.length; i2++) {
+        if (scaled[i2] > MIN_COL_W && (best === -1 || scaled[i2] > scaled[best])) best = i2;
+      }
+      if (best === -1) break;
+      scaled[best]--;
+      sum--;
+    }
+    if (sum < MAX_TOTAL) scaled[0] += MAX_TOTAL - sum;
+    return scaled;
+  }
+  if (total < MAX_TOTAL) {
+    const scale = MAX_TOTAL / total;
+    const scaled = widths.map((w) => Math.round(w * scale));
+    const diff = MAX_TOTAL - scaled.reduce((a, b) => a + b, 0);
+    scaled[0] += diff;
+    return scaled;
   }
   return widths;
 }
