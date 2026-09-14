@@ -38,7 +38,7 @@ export interface RenderResult {
 const isExternal = (src: string) => /^(https?:)?\/\//i.test(src);
 
 // YAML frontmatter 剥离：只匹配文档头部的 --- 块（容忍 BOM），防 --- 被渲染为 <hr> 与正文并列
-const FRONTMATTER_RE = /^\uFEFF?---\s*\n([\s\S]*?)\n---(?:\n|$)/;
+export const FRONTMATTER_RE = /^\uFEFF?---\s*\n([\s\S]*?)\n---(?:\n|$)/;
 
 // CJK 间距守卫：累计 text 超过阈值后不再处理（超大文档性能保护）
 const MAX_CJK_PAD_CHARS = 200_000;
