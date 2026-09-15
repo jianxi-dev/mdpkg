@@ -109,3 +109,14 @@ git status                 # 工作区状态（PLAN_MERGED.md / spec/ / packages
 启动新 change、接手进行中 change、拆票、提交/PR、收尾与归档，一律经 `.opencode/skills/change-workflow/`（G0-G4 五 gate + fix-first 自愈回路）。拆票/commit/闭环规范见 `docs/agents/task-tracking.md`（1 task = 1 ticket，1 issue = 1 PR）；看板入列 API 见 `docs/agents/project-board.md`。缺陷流程见 `docs/agents/defect-workflow.md`。
 
 > 配置：`.change-workflow.conf`（看板 ID / 标签 / 门禁命令 / 目录约定）
+
+### GBrain 检索（本机已配置）
+
+本仓库已接入 gbrain（本机 `gbrain` CLI + `~/.gbrain` 本地引擎）；worktree 通过根目录 `.gbrain-source` 固定到专属代码源（无需 `--source` 参数）。
+
+- 语义检索（不知道确切字符串/标识时）：`gbrain search "<关键词>"` / `gbrain query "<问题>"`
+- 符号级定位（定义 / 引用）：`gbrain code-def <symbol>` / `gbrain code-refs <symbol>`
+- 调用关系：`gbrain code-callers <symbol>` / `gbrain code-callees <symbol>`（边解析依赖 `gbrain dream`，未构建时结果有限）
+- 本仓代码有实质变更后：运行 `/sync-gbrain` 刷新索引（增量）
+
+Grep 仍适用于：已知精确字符串、正则、多行模式、文件通配。
