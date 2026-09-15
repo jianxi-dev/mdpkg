@@ -1155,3 +1155,50 @@ test('回归#16-l 12列含长内容：总和 9026 且每列 ≥400', async () =>
     assert.ok(w >= 400, `每列应 ≥400，实际 ${w}`);
   }
 });
+
+// ============ Typography fix (issue #21) ============
+
+test('排版 独立图片段落居中：w:jc w:val="center"', async () => {
+  const body = '![示例图片](assets/pic.png)\n';
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/pic.png': PNG })));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(doc.includes('<w:jc w:val="center"/>'), '独立图片段落应含居中对齐');
+});
+
+test('排版 行内图片不居中：文字+图片段落无 w:jc', async () => {
+  const body = '文字 ![图](assets/pic.png) 文字\n';
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/pic.png': PNG })));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(!doc.includes('<w:jc w:val="center"/>'), '行内图片段落不应含居中对齐');
+});
+
+test('排版 表格单元格图片不居中：单元格内图片无 w:jc', async () => {
+  const body = '| 列A |\n| --- |\n| ![图](assets/pic.png) |\n';
+  const out = await unpackDocx(toDocx(pkg(body, { 'assets/pic.png': PNG })));
+  const doc = dec.decode(out.get('word/document.xml')!);
+  assert.ok(!doc.includes('<w:jc w:val="center"/>'), '表格单元格图片不应含居中对齐');
+});
+
+test('排版 标题黑体：styles.xml Heading1-6 含 w:eastAsia="黑体"', async () => {
+  const body = '# 一\n## 二\n### 三\n#### 四\n##### 五\n###### 六\n';
+  const out = await unpackDocx(toDocx(pkg(body)));
+  const styles = dec.decode(out.get('word/styles.xml')!);
+  for (let i = 1; i <= 6; i++) {
+    assert.ok(
+      styles.includes(`w:styleId="Heading${i}"`) && styles.includes('w:eastAsia="黑体"'),
+      `Heading${i} 应含 w:eastAsia="黑体"`
+    );
+  }
+  // 精确计数：黑体出现 6 次（每个 heading 一次）
+  const count = (styles.match(/eastAsia="黑体"/g) || []).length;
+  assert.equal(count, 6, `黑体应出现 6 次，实际 ${count}`);
+});
+
+test('排版 正文宋体回归：docDefaults 仍为 eastAsia="宋体"', async () => {
+  const out = await unpackDocx(toDocx(pkg('# 标题\n\n正文\n')));
+  const styles = dec.decode(out.get('word/styles.xml')!);
+  assert.ok(
+    styles.includes('<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="宋体"/>'),
+    'docDefaults 应保持宋体不变'
+  );
+});
