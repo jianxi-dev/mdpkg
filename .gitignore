@@ -12,7 +12,6 @@ node_modules/
 .omp/
 .opencode/
 .pi/
-openspec/
 .gstack/
 .gbrain-source
 .playwright-mcp/
