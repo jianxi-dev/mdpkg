@@ -89,3 +89,13 @@
 
 - 仓库根 `.prettierrc`（`singleQuote:false`、printWidth 80）**不适用于 src 手写风格（单引号、长行）**；`scripts/verify.sh` 的 prettier 检查只覆盖少数根文件。
 - **对 `packages/mdpkg/src/*.ts`、`test/*.ts` 跑仓库根 `prettier --write` 会引发全文件重排（引号+换行），diff 噪声 ~3 倍**。恢复只能近似（`--single-quote --print-width 140` 仍有残余换行差异）。手写风格即规范，不要自动化格式化这些文件。
+
+## Typography fix (2026-09-15, fix/docx-typography, #21)
+
+### 标题黑体 + 图片居中
+
+- **样式表注入**：Heading1–6 的 `<w:rPr>` 插入 `<w:rFonts w:eastAsia="黑体"/>`（仅覆盖 eastAsia，不动 ascii/hAnsi）。docDefaults 保持 `eastAsia="宋体"` 不变。
+- **图片居中判定**：在 `blockToXml` paragraph case 中，当 `!extra?.style && !extra?.numPr && children.length===1 && children[0].type==='image'` 时注入 `<w:jc w:val="center"/>`。排除面：表格单元格（`style:'Table'`）、列表项（`numPr`）、引用块（`style:'Quote'`）、行内图片（子节点>1）。
+- **关键陷阱**：`extra?.style` 在表格单元格序列化时被设为 `'Table'`（`tableToXml` 调用 `blockToXml(b, ctx, { style: 'Table' })`），这是判断"是否在表格内"的可靠信号。
+- **测试覆盖**：5 新用例（独立图片居中、行内图片不居中、表格图片不居中、标题黑体×6、正文宋体回归）。323 全绿。
+- **openspec**：ADDED requirement「docx 排版规范」，不冲突于 docx-export-quality 的 MODIFIED requirements（该 change 尚未 archive）。
