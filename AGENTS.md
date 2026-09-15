@@ -103,3 +103,9 @@ git status                 # 工作区状态（PLAN_MERGED.md / spec/ / packages
 - 定位：先自用后标准化，3 个月止损判据；VS Code 插件（M7）在采用可行性验证前不启动。
 - 2026-08-31：MDE → mdpkg 统一改名完成（错误码 MDPKG-EXXX，manifest 标识字段 format:"mdpkg"），三仓库拆分：mdpkg（本仓库，格式+CLI）/ md-bundle（网页工具占位，新建）/ clairis（桌面旗舰）
 > 收尾铁律：合并后本地工作区停留在 main（详见 docs/agents/incident-merge-local-workspace.md）
+
+### Change workflow（变更流程 gate）
+
+启动新 change、接手进行中 change、拆票、提交/PR、收尾与归档，一律经 `.opencode/skills/change-workflow/`（G0-G4 五 gate + fix-first 自愈回路）。拆票/commit/闭环规范见 `docs/agents/task-tracking.md`（1 task = 1 ticket，1 issue = 1 PR）；看板入列 API 见 `docs/agents/project-board.md`。缺陷流程见 `docs/agents/defect-workflow.md`。
+
+> 配置：`.change-workflow.conf`（看板 ID / 标签 / 门禁命令 / 目录约定）
