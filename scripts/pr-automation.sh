@@ -16,6 +16,9 @@
 #        → 显式 git add 白名单提交 → push → gh pr create(模板+风险标签)
 #        → 按风险分级启用 auto-merge
 #
+# 白名单路径若被 .gitignore 匹配(如 force-tracked 的 .omo/notepads/**),
+# git add 会失败,此时自动 fallback 到 git add -f(路径已由 --files 显式限定)。
+#
 # --resume-branch 模式 (change-workflow G2): 分支已由实施阶段创建(1 票 1 PR 模型),
 #   跳过建分支; 支持未提交改动 + --files 白名单提交; PR 检测一致性校验
 #   (head==branch && base==main && state==OPEN) 后 create/edit 同步 title/risk。
@@ -204,7 +207,10 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
   fi
 
   echo "==> 3/6 显式 add 白名单提交"
-  git add "${FILES[@]}"
+  if ! git add -- "${FILES[@]}" 2>/dev/null; then
+    echo "    [add] 白名单含被 .gitignore 匹配的路径，改用 git add -f（路径已由 --files 显式限定）"
+    git add -f -- "${FILES[@]}"
+  fi
   git status --short
   git commit -m "$TITLE
 

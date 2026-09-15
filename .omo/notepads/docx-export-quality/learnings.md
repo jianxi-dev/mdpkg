@@ -99,3 +99,20 @@
 - **关键陷阱**：`extra?.style` 在表格单元格序列化时被设为 `'Table'`（`tableToXml` 调用 `blockToXml(b, ctx, { style: 'Table' })`），这是判断"是否在表格内"的可靠信号。
 - **测试覆盖**：5 新用例（独立图片居中、行内图片不居中、表格图片不居中、标题黑体×6、正文宋体回归）。323 全绿。
 - **openspec**：ADDED requirement「docx 排版规范」，不冲突于 docx-export-quality 的 MODIFIED requirements（该 change 尚未 archive）。
+
+## Repo infra (2026-09-15, chore/openspec-vcs, #23)
+
+### openspec 纳入版本控制
+
+- `.gitignore` 移除 `openspec/` 行（原在 "# AI tool runtime dirs" 块内），整个 openspec 树（config.yaml / specs/** / changes/** / changes/archive/**）现已跟踪。
+- 其余 ignore 条目（.omo/ .gstack/ .codegraph 等）保持不变。
+
+### pr-automation add fallback
+
+- `scripts/pr-automation.sh` 的 `==> 3/6 显式 add 白名单提交` 块：`git add` 失败时 fallback 到 `git add -f`（路径已由 `--files` 显式限定，安全）。
+- 头注释块新增说明：白名单路径若被 .gitignore 匹配（如 force-tracked 的 .omo/notepads/**），自动 fallback。
+
+### docx-export-quality 归档
+
+- `openspec/changes/docx-export-quality/` → `openspec/changes/archive/2026-09-15-docx-export-quality/`。
+- 主 spec（docx-export）与归档前 byte-identical，归档幂等，不回归。
