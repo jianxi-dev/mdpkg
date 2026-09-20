@@ -1,7 +1,3 @@
-<!-- change-workflow 工具包模板 —— 由 setup.sh 安装到目标项目 docs/agents/。
-     示例值（模块列表 / 看板 ID / 质量门禁命令）请按目标项目调整；
-     占位符 jianxi-dev/mdpkg / PVT_kwDOE0POlM4BjPai / PVTSSF_lADOE0POlM4BjPaizhiEhFM / {{OPT_*}} 由 setup.sh 自动替换。 -->
-
 # 完成跟踪看板(GitHub Projects)
 
 > 生效日期：2026-09-12

@@ -1,12 +1,8 @@
-<!-- change-workflow 工具包模板 —— 由 setup.sh 安装到目标项目 docs/agents/。
-     示例值（模块列表 / 看板 ID / 质量门禁命令）请按目标项目调整；
-     占位符 jianxi-dev/mdpkg / PVT_kwDOE0POlM4BjPai / PVTSSF_lADOE0POlM4BjPaizhiEhFM / {{OPT_*}} 由 setup.sh 自动替换。 -->
-
 # 任务发布与跟踪（to-tickets 桥接规范）
 
 > 适用范围：把 OpenSpec change 的 tasks 发布为 GitHub issue，打通"spec → 开发 → 完成跟踪"全链路。
 > 生效日期：2026-09-12
-> 配套：`docs/agents/issue-tracker.md`（issue 操作）、`docs/agents/triage-labels.md`（状态标签）、`docs/agents/defect-workflow.md`（缺陷流程）
+> 配套：`docs/agents/quality-gates.md`（**QG-1..QG-7 质量门禁——票的 AC 与完成判据**）、`docs/agents/issue-tracker.md`（issue 操作）、`docs/agents/triage-labels.md`（状态标签）、`docs/agents/defect-workflow.md`（缺陷流程）
 
 ---
 
@@ -29,9 +25,31 @@ to-tickets 流程在本仓库一律发布为 GitHub issue（不使用本地 `.sc
 每个 ticket 必须包含：
 - **Parent**：源 spec issue（to-spec 创建的规格票）引用
 - **What to build**：从用户视角描述端到端行为
-- **Acceptance criteria**：具体可验证的 AC 清单
+- **Acceptance criteria**：具体可验证的 AC 清单（**须满足 QG-1**，见下）
 - **Blocked by**：阻塞它的其他 ticket 引用（无则 "None — can start immediately"）
-- 标签：`ready-for-agent` + 模块标签
+- **接线归属**（QG-3）：本票导出的新 API 由**哪张票**负责接进 `apps/web`，及其**具体接线位置**
+- 标签：`ready-for-agent` + 模块标签，或加 `no-ui-impact`（豁免 QG-1/QG-2）
+
+### 3.1 AC 质量门禁（QG-1 / QG-3）
+
+> 完整定义见 `docs/agents/quality-gates.md`。此处仅列发布时必须通过的检查。
+
+**QG-1｜面向用户的票，AC 必须含浏览器可观测陈述**：
+
+```
+在 `pnpm --filter @md-bundle/web dev` 打开的页面中，
+<具体操作> 之后，<可具体观测的结果>。
+验证：apps/web/test/<feature>.spec.ts 通过。
+```
+
+**反向验收判据**：若一条 AC 能在**不修改 `apps/web`** 的前提下被满足 → 票切错了（QG-7）。
+
+**QG-3｜分派接线**：任何导出新 API 的票，必须显式指定接线票与接线位置；无引用且未指定 → 拒票。
+
+**禁入信号（出现任一即拒票）**：
+- AC 全部是库层断言（如「`getBlocks()` 返回块数组」「类型检查通过」）
+- AC 无法用「打开页面操作一次」验证
+- 导出新 API 却无 `apps/web` 引用、且未指定接线票
 
 ## 4. 子票关联与对账（Parent = 源 spec issue）
 
@@ -72,15 +90,20 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
 | Skill | 作用 | 强制? |
 |---|---|---|
 | `implement` | 总编排：按 spec/tickets 实施，自动内嵌 tdd + 定期 typecheck/test，完成后调 code-review | ✅ 必用 |
-| `tdd` | 测试先行（红→绿 + 垂直切片），锁定行为契约 | ✅ implement 内嵌 |
+| `tdd` | 测试先行（红→绿 + 垂直切片），锁定行为契约。**测试须满足 QG-4**（驱动真实路径，禁止绕过 keymap/事件/公共 API） | ✅ implement 内嵌 |
 | `programming` | 代码规范对照（no any / 250 LOC 上限） | 可选叠加 |
 | 四件套硬门禁 | `pnpm -r typecheck/lint/test`（+e2e 涉及时），push 前强制 | ✅ `pr-automation.sh` 已内置 |
+| **e2e 硬门禁（QG-2）** | 用户可见变更**必须**新增/扩展 `apps/web/test/*.spec.ts`，否则票上须有 `no-ui-impact` | ✅ **新增门禁，push 前强制** |
+| **独立验证（QG-5）** | 验证者跑自己的探针并把**原始输出**粘贴到票上；未附原始证据的「已完成」不予采信 | ✅ **新增门禁** |
+| **集成 checkpoint（QG-6）** | change ≥6 票时，每 ≤4 票合并 + `pnpm -r build` + 浏览器打开一次 | ✅ **新增门禁** |
+
+> **QG-2 的由来（2026-09-20）**：`editor-v2` change 期间新增 e2e 为 **0**，CI 跑的是 v1 旧行为——「CI 绿」只等于「旧功能没坏」，与「新功能存在」逻辑上无关。CI 已在跑 e2e，此门禁**不增加基建成本**，只是让覆盖跟上新功能。完整根因见 `docs/agents/retro-editor-v2-quality.md`。
 
 ### 7.2 执行后（发布阶段）
 
 | Skill | 作用 | 触发条件 |
 |---|---|---|
-| `code-review` | 双轴自审（Standards 代码规范 + Spec 需求符合，并行防互相掩盖） | ✅ 每次提交后 |
+| `code-review` | 双轴自审（Standards 代码规范 + Spec 需求符合，并行防互相掩盖）。**须对照 QG-4 逐条检查测试是否驱动真实路径** | ✅ 每次提交后 |
 | `review` | Pre-Landing 结构审查（SQL 安全/LLM trust boundary/条件副作用/scope drift） | ⚠️ 仅 risk-medium/high |
 | `qa` | 浏览器真机验证（diff-aware），health score + ship-readiness | 发布前 |
 | `ship` | 全自动发布（版本 bump + CHANGELOG + PR） | 正式发版 |
@@ -111,12 +134,18 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
 ### 7.5 闭环示意（任务级）
 
 ```
-捡 issue → implement(tdd+typecheck/test) → 四件套硬门禁 → code-review
+捡 issue → 校验 QG-1(AC 可页面验证)/QG-3(接线已归属)
+  → implement(tdd + typecheck/test，测试须满足 QG-4 真实路径)
+  → 四件套硬门禁 + e2e 硬门禁(QG-2)
+  → code-review(对照 QG-4) → [QG-5 独立验证：粘贴原始输出]
   → git-master 提交 fixes #N → push → pr create(risk 分级)
   → CI → low:auto-merge / medium/high:review+人工
   → learn → sync-gbrain → 下一轮 issue
+  [QG-6] change ≥6 票时每 ≤4 票插入集成 checkpoint
 qa(发布前真机) / ship(正式发版) 按需接入
 ```
+
+> **QG-5 的强制位置**：独立验证发生在 **code-review 之后、commit 之前**。未附验证者原始输出的「已完成」不得进入 G2 提交。
 
 ## 8. Change 级收尾（自动触发，无需手动喊）
 
@@ -163,4 +192,4 @@ gh pr list --state open --head <关联分支>            # 检查无未合并 PR
 
 ---
 
-_最后更新：2026-09-12_
+_最后更新：2026-09-20_
