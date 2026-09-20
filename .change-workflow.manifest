@@ -1,5 +1,5 @@
 3169ed3db8416004ec224c821da16e32a6dc31718b1545f6e0514e07c640d095  .opencode/skills/change-workflow/SKILL.md
-3a74998f7228d791d3df89f662405107c6c24b75b758f70c8138c25c2cb10c03  scripts/pr-automation.sh
+51249441cac07cd3bbcd5152434afd6a4c6b16a17516c23a98c0c496365419c8  scripts/pr-automation.sh
 817dd5100569dcda406c6f67622216e2ac9c49c3d21997c6a153cb5823bfb100  .github/workflows/change-closure-signal.yml
 5f20e3232e96c0fe30df2d4d1a94d02cff8988032d54ae883c2fda46c6a27864  docs/agents/defect-workflow.md
 4c9af9cd16f61af1833440cb4bc49e9562a7f6707006970f6420a3bee88f8370  docs/agents/domain.md

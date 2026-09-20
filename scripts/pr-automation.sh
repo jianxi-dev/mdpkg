@@ -214,7 +214,7 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
   git status --short
   git commit -m "$TITLE
 
-fixes #$ISSUE"
+$( [[ "$REFS_ONLY" == "1" ]] && echo "refs #$ISSUE" || echo "fixes #$ISSUE" )"
 else
   echo "==> 跳过提交(无 --files 参数)。分支上已有 commit; 直接 push + PR 检测"
 fi
