@@ -39,11 +39,60 @@ cd "$REPO_ROOT"
 
 # --- 载入项目配置（可选）-----------------------------------------------------
 # 目标项目根放置 .change-workflow.conf（由 setup.sh 生成）；缺失则用内置默认值。
+# 不 source conf（B1/RCE 边界）：conf 提交进消费仓且**不受管**（INSTALL.md:137），
+# 恶意 PR 可在其中追加 shell（如 CMD_TEST="$(touch pwned)"），source 即执行。
+# 白名单逐键解析（与 cw-update.sh 同款 conf_get），只取字面值、不求值。
+# 统一规范（F6+F8，与 lib/render.sh 的 cw_conf_get 及 cw-update.sh / cw-greploop.sh 的
+# conf_get 逐字同语义，改一处必同步四处，回归锁在 e2e 用例 22）：
+#   1) `#` 开头的整行注释跳过；2) 原始值 = 首个 `=` 之后的全部文本；3) 去尾部 \r；
+#   4) 值以 " 或 ' 开头且**后方存在同名闭引号** → 取首对引号之间的内值（内部 # 原样保留），
+#      但闭引号之后只允许「空白」或「空白 + # 注释」（红证：`"val" # c` 旧「首尾同引号」
+#      判定被尾注释破坏 → 引号存活返回 `"val"`）；引号后有杂质 → 整值按无引号处理；
+#      无引号时仅在「空白 + #」处截断行内注释（`x # c` → `x`；无空白的 `r#frag` 保留）；
+#   5) 去尾部空白；6) 输出。键不存在返回 1。
 CONF="$REPO_ROOT/.change-workflow.conf"
-if [[ -f "$CONF" ]]; then
-  # shellcheck disable=SC1090
-  source "$CONF"
-fi
+conf_get() {
+  local key="$1" line v q inner rest
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      \#*) continue ;;
+    esac
+    # 锚定行首（1.3.1 QA ISSUE-002）：子串匹配 *"$key="* 会被诱饵行误命中
+    # （如 OLD_REPO= 在 REPO= 之前先子串命中 REPO=），故键必须位于行首。
+    case "$line" in
+      "$key"=*) v="${line#*=}" ;;
+      *) continue ;;
+    esac
+    v="${v%$'\r'}"
+    q="${v:0:1}"
+    if [[ "$q" == '"' || "$q" == "'" ]] && [[ "${v:1}" == *"$q"* ]]; then
+      # 同名闭引号存在 → 取首对引号之间的内值；但闭引号之后只允许「空白」或
+      # 「空白 + # 注释」（红证：`"val" # c` 旧「首尾同引号」判定被尾注释破坏 →
+      # 引号存活返回 `"val"`，统一前的旧实现返回 val）。引号后有杂质 → 按无引号处理。
+      inner="${v#"$q"}"
+      rest="${inner#*"$q"}"
+      case "${rest#"${rest%%[![:space:]]*}"}" in
+        ''|'#'*) v="${inner%%"$q"*}" ;;
+        *) v="${v%%[[:space:]]#*}" ;;
+      esac
+    else
+      v="${v%%[[:space:]]#*}"
+    fi
+    v="${v%"${v##*[![:space:]]}"}"
+    printf '%s\n' "$v"
+    return 0
+  done < "$CONF"
+  return 1
+}
+CMD_TYPECHECK="$(conf_get CMD_TYPECHECK || true)"
+CMD_LINT="$(conf_get CMD_LINT || true)"
+CMD_TEST="$(conf_get CMD_TEST || true)"
+LABEL_RISK_LOW="$(conf_get LABEL_RISK_LOW || true)"
+LABEL_RISK_MEDIUM="$(conf_get LABEL_RISK_MEDIUM || true)"
+LABEL_RISK_HIGH="$(conf_get LABEL_RISK_HIGH || true)"
+LABEL_SOURCE="$(conf_get LABEL_SOURCE || true)"
+LABEL_READY="$(conf_get LABEL_READY || true)"
+DEFAULT_BRANCH="$(conf_get DEFAULT_BRANCH || true)"
 CMD_TYPECHECK="${CMD_TYPECHECK:-}"
 CMD_LINT="${CMD_LINT:-}"
 CMD_TEST="${CMD_TEST:-}"

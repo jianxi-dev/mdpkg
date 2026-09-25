@@ -99,25 +99,21 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
 
 > **QG-2 的由来（2026-09-20）**：`editor-v2` change 期间新增 e2e 为 **0**，CI 跑的是 v1 旧行为——「CI 绿」只等于「旧功能没坏」，与「新功能存在」逻辑上无关。CI 已在跑 e2e，此门禁**不增加基建成本**，只是让覆盖跟上新功能。完整根因见 `docs/agents/retro-editor-v2-quality.md`。
 
-### 7.2 执行后（发布阶段）
+### 7.2 执行后（提交前自审）
 
 | Skill | 作用 | 触发条件 |
 |---|---|---|
 | `code-review` | 双轴自审（Standards 代码规范 + Spec 需求符合，并行防互相掩盖）。**须对照 QG-4 逐条检查测试是否驱动真实路径** | ✅ 每次提交后 |
 | `review` | Pre-Landing 结构审查（SQL 安全/LLM trust boundary/条件副作用/scope drift） | ⚠️ 仅 risk-medium/high |
-| `qa` | 浏览器真机验证（diff-aware），health score + ship-readiness | 发布前 |
-| `ship` | 全自动发布（版本 bump + CHANGELOG + PR） | 正式发版 |
-
-> **关于 ship 与测试的重复（2026-09-12 实测修正）**：ship skill 源码硬编码 "Never skip tests"（SKILL.md:1406）且禁止因 CI 已跑而跳过验证（line 879）。**ship 每次都会重跑测试——这是 skill 的强制行为，无法通过文档说明省略**。但实测本仓库 test 仅 ~3s（371 passed / 3.10s），且 ship 测的是 merge-base 合并后状态（与 CI 测的 PR head 状态不完全等同），重复成本可忽略、有独立价值。**结论：ship 测试保留，不算冗余**。真正该省的"大重复"是本地四件套与 CI 之间的浪费（本地 30s 拦截 vs CI 3min 权威），已在 §7.1 通过硬门禁解决。
 
 ### 7.3 收尾（闭环，每轮必做）
 
 | Skill | 作用 | 时机 |
 |---|---|---|
-| `learn` | 沉淀经验（模式/陷阱/偏好），`/learn` 管理 | ✅ **ship（push + PR 创建）后立即** |
+| `learn` | 沉淀经验（模式/陷阱/偏好），`/learn` 管理 | ✅ **push + PR 创建后立即** |
 | `sync-gbrain` | 刷新代码索引，后续 agent 可语义检索新代码 | ✅ learn 之后立即 |
 
-> **时序修正（2026-09-12）**：learn + sync-gbrain 在 **ship（推送 + 创建 PR）后立即执行，不等合并**。理由：
+> **时序修正（2026-09-12）**：learn + sync-gbrain 在 **推送 + 创建 PR 后立即执行，不等合并**。理由：
 > - learn/sync-gbrain 操作的是**本地工作区文件**，代码推送后本地即最新，无需等远端合并
 > - risk-medium/high 的 PR 需人工合并，若等合并才收尾，会**阻塞下一个 change 启动**
 > - 合并发生时只需一次增量 `gbrain sync` 对账（秒级），不构成依赖
@@ -127,7 +123,6 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
 ### 7.4 重复点优化（按风险分级的最小充分集）
 
 - **test 4 层保留前三层**：tdd 单测（秒级反馈，锁行为）→ 本地四件套（push 前全量，防浪费 CI 轮次）→ CI build-test（权威环境，锁文件/平台差异）。价值递进非冗余。
-- **ship 内 test 删除**：CI 已全绿，ship 只做版本+bump+CHANGELOG+PR，不重跑测试。
 - **code-review 与 review 错开**：low → 仅 code-review；medium/high → 加 review。
 - **净效果**：low = tdd→四件套→CI→code-review；medium/high = 上述 + review。
 
@@ -138,14 +133,39 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
   → implement(tdd + typecheck/test，测试须满足 QG-4 真实路径)
   → 四件套硬门禁 + e2e 硬门禁(QG-2)
   → code-review(对照 QG-4) → [QG-5 独立验证：粘贴原始输出]
-  → git-master 提交 fixes #N → push → pr create(risk 分级)
+  → pr-automation.sh 提交 fixes #N → push → pr create(risk 分级)
   → CI → low:auto-merge / medium/high:review+人工
   → learn → sync-gbrain → 下一轮 issue
   [QG-6] change ≥6 票时每 ≤4 票插入集成 checkpoint
-qa(发布前真机) / ship(正式发版) 按需接入
+发版（VERSION + CHANGELOG + tag）按发布节奏接入
 ```
 
 > **QG-5 的强制位置**：独立验证发生在 **code-review 之后、commit 之前**。未附验证者原始输出的「已完成」不得进入 G2 提交。
+
+### 7.6 浏览器验证与发版
+
+**浏览器验证由 QG-5 与 QG-6 承担，不引入外部 QA skill**：
+
+| 门禁 | 位置 | 做什么 |
+|---|---|---|
+| QG-5 独立验证 | G1 出口（code-review 之后、commit 之前） | 验证者跑自己的探针（真实按键 / `getComputedStyle` / XML 解析 / `EditorView`），把**原始输出**贴到票上；不可豁免 |
+| QG-6 集成 checkpoint | G1 循环（change ≥6 票，每 ≤4 票一次） | 合并到集成分支 → build → **浏览器打开一次** → 记录「现在用户能看到什么」 |
+
+两者都不依赖外部 QA skill：QG-5 的探针可脚本化（配合 `scripts/cw-evidence.sh` 采集分层证据），QG-6 只要求打开浏览器观察一次。**探索式浏览器 QA**（穷举页面、找无预设探针的潜伏 bug）是另一类价值，本流程不内置；需要的消费仓可自行安装 gstack `qa`，但它不属于本流程的 gate。
+
+**发版 = 版本快照，不改代码**：
+
+```bash
+# 1. 同步两处（唯一源是 VERSION）
+#    - VERSION
+#    - CHANGELOG.md 顶部条目
+# 2. 打 tag 并推送
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+- 1 task = 1 ticket = 1 PR 逐票合 main，main 始终可发布；发版只是给它一个版本号，**不产生功能 diff**，故无需发版 PR 评审（功能 PR 已在 G2 评审过）
+- 不引入外部发布自动化 skill（如 gstack `ship`）：它的「发版分支 + 发版 PR」模型与逐票合 main 冲突
+- 若确需「发版前对整体再冒烟一次」，用 QG-6 的集成 checkpoint（有 diff 可验）或在集成分支上打开浏览器观察，而不是新检出一条空分支
 
 ## 8. Change 级收尾（自动触发，无需手动喊）
 

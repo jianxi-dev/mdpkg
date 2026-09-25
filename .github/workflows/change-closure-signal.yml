@@ -31,12 +31,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 载入项目配置（可选）
-          if [ -f .change-workflow.conf ]; then
-            set -a; . ./.change-workflow.conf; set +a
-          fi
-          LABEL_READY="${LABEL_READY:-ready-for-agent}"
-          LABEL_CLOSURE_PENDING="${LABEL_CLOSURE_PENDING:-change-close-pending}"
+          # 载入项目配置（可选）—— 只提取两个标签字面值，绝不 source：
+          # conf 提交进消费仓，恶意 PR 可在其中追加 shell（如 LABEL_READY="$(touch pwned)"），
+          # source 会在 CI（pull_request: closed + issues/pull-requests: write）下执行（RCE）。
+          CONF=.change-workflow.conf
+          # cw-label-extract: begin
+          # （e2e 用例 22 按 begin/end 标记抽取本段做跨实现一致性测试 —— 段必须自包含：
+          #  只依赖 $CONF，不引用段外变量。）
+          # 对抗轮4 Gap C：提取语义必须与统一 conf 规范逐字一致（F6+F8，见 lib/render.sh
+          # cw_conf_get 头注）。旧写法只做裸引号剥离：`LABEL_READY="ready-for-agent"  # 注释`
+          # （正是 config.example.conf 引导用户改标签处的注释风格）产出悬空引号+注释的
+          # 垃圾标签；CRLF conf 取值带回车。规范：去尾部 \r → 引号对优先（闭引号后只
+          # 允许空白或 # 注释，否则按无引号处理）→ 无引号时在「空白+#」截断 → 去尾部空白。
+          # 去管道（F7）：grep -m1 单命令 + || true，无 SIGPIPE 面；缺键 → 空 → 走 :- 默认。
+          cw_conf_label() {
+            local key="$1" line v q inner rest
+            [[ -f "$CONF" ]] || return 1
+            line="$(grep -m1 "^${key}=" "$CONF" || true)"
+            [[ -n "$line" ]] || return 1
+            v="${line#*=}"
+            v="${v%$'\r'}"
+            q="${v:0:1}"
+            if [[ "$q" == '"' || "$q" == "'" ]] && [[ "${v:1}" == *"$q"* ]]; then
+              inner="${v#"$q"}"
+              rest="${inner#*"$q"}"
+              case "${rest#"${rest%%[![:space:]]*}"}" in
+                ''|'#'*) v="${inner%%"$q"*}" ;;
+                *) v="${v%%[[:space:]]#*}" ;;
+              esac
+            else
+              v="${v%%[[:space:]]#*}"
+            fi
+            v="${v%"${v##*[![:space:]]}"}"
+            printf '%s\n' "$v"
+          }
+          LABEL_READY="$(cw_conf_label LABEL_READY || true)"; LABEL_READY="${LABEL_READY:-ready-for-agent}"
+          LABEL_CLOSURE_PENDING="$(cw_conf_label LABEL_CLOSURE_PENDING || true)"; LABEL_CLOSURE_PENDING="${LABEL_CLOSURE_PENDING:-change-close-pending}"
+          # cw-label-extract: end
 
           echo "PR #$PR merged — detecting change closure…"
 
