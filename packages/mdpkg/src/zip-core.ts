@@ -101,40 +101,108 @@ export function packRaw(files: Map<string, Uint8Array>): Uint8Array {
 }
 
 /**
- * 按 local file header 边界将 ZIP 切块，使每块条目数 ≤ maxEntries。
+ * 解析 ZIP 中央目录（EOCD → central directory），获取每个 entry 的 local header 偏移。
+ * 语义：central directory 中的 local header offset（offset 42-45）是权威值，
+ * 不受 zip64哨兵（compSize=0xFFFFFFFF）和 data descriptor（bit-3, compSize=0）影响。
+ * 返回 null 表示解析失败（非标准 ZIP），调用方应退化到整块单推。
+ */
+function parseCentralDirOffsets(data: Uint8Array): number[] | null {
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (data.length < 22) return null;
+
+  // 1. 找 EOCD（PK\x05\x06）：从末尾向前搜（EOCD 在文件末尾，comment ≤ 65535 字节）
+  let eocdOff = -1;
+  const searchStart = Math.max(0, data.length - 22 - 65535);
+  for (let i = data.length - 22; i >= searchStart; i--) {
+    if (data[i] === 0x50 && data[i + 1] === 0x4b && data[i + 2] === 0x05 && data[i + 3] === 0x06) {
+      eocdOff = i;
+      break;
+    }
+  }
+  if (eocdOff === -1) return null;
+
+  // 2. 读取 EOCD 字段
+  let cdOff = dv.getUint32(eocdOff + 16, true);
+  let numEntries = dv.getUint16(eocdOff + 10, true);
+  const cdSize = dv.getUint32(eocdOff + 12, true);
+
+  // 3. 处理 zip64：EOCD 字段为 0xFFFF/0xFFFFFFFF 时，找 zip64 EOCD record
+  if (numEntries === 0xFFFF || cdOff === 0xFFFFFFFF || cdSize === 0xFFFFFFFF) {
+    // zip64 EOCD locator（PK\x06\x07）在 EOCD 之前 20 字节
+    const locatorOff = eocdOff - 20;
+    if (locatorOff < 0) return null;
+    if (data[locatorOff] !== 0x50 || data[locatorOff + 1] !== 0x4b ||
+        data[locatorOff + 2] !== 0x06 || data[locatorOff + 3] !== 0x07) return null;
+    const zip64EocdOff = Number(dv.getBigUint64(locatorOff + 8, true));
+    if (zip64EocdOff + 56 > data.length) return null;
+    // zip64 EOCD record 签名 PK\x06\x06
+    if (data[zip64EocdOff] !== 0x50 || data[zip64EocdOff + 1] !== 0x4b ||
+        data[zip64EocdOff + 2] !== 0x06 || data[zip64EocdOff + 3] !== 0x06) return null;
+    // 读取 zip64 8 字节条目数和 CD offset（zip64 record 最小 56 字节）
+    numEntries = Number(dv.getBigUint64(zip64EocdOff + 32, true));
+    cdOff = Number(dv.getBigUint64(zip64EocdOff + 48, true));
+  }
+
+  // 4. 遍历 central directory，收集每个 entry 的 local header offset
+  const offsets: number[] = [];
+  let pos = cdOff;
+  for (let i = 0; i < numEntries; i++) {
+    if (pos + 46 > data.length) return null;
+    if (data[pos] !== 0x50 || data[pos + 1] !== 0x4b ||
+        data[pos + 2] !== 0x01 || data[pos + 3] !== 0x02) return null;
+    const nameLen = dv.getUint16(pos + 28, true);
+    const extraLen = dv.getUint16(pos + 30, true);
+    const commentLen = dv.getUint16(pos + 32, true);
+    const localHdrOff = dv.getUint32(pos + 42, true);
+    offsets.push(localHdrOff);
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+
+  return offsets;
+}
+
+/**
+ * 按 ZIP 条目边界将数据切块，使每块条目数 ≤ maxEntries。
  * 目的：fflate Unzip 单次 push 递归解析在 ~2108 条目处静默截断（issue #1），
  *       分块后每块递归深度 ≤ 块内条目数，避免栈溢出丢内容。
- * 退化：任何解析异常（不完整 header、长度溢出）→ 返回 [data]（整块，保持既有行为）。
+ *
+ * 实现：通过 central directory 解析每个 entry 的 local header 偏移（权威值），
+ *       按偏移排序后，在 maxEntries 边界处切分。最后一块含 central directory + EOCD。
+ *
+ * 兼容性（issue #3）：
+ *   - zip64：local header compSize=0xFFFFFFFF 哨兵不影响，因切块依据是 central directory
+ *     中的 local header offset，而非 local header 中的 compSize。
+ *   - data descriptor（bit-3）：local header compSize=0 不影响，理由同上。
+ *
+ * 退化：central directory 解析失败 → 返回 [data]（整块，保持既有行为）。
  */
 function chunkZIP(data: Uint8Array, maxEntries: number): Uint8Array[] {
   if (maxEntries <= 0 || data.length < 30) return [data];
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const chunks: Uint8Array[] = [];
-  let chunkStart = 0, count = 0, i = 0;
 
-  while (i <= data.length - 4) {
-    // 找 local file header 签名 PK\x03\x04
-    if (data[i] !== 0x50 || data[i + 1] !== 0x4b || data[i + 2] !== 0x03 || data[i + 3] !== 0x04) { i++; continue; }
-    // 不完整 header → 退化
-    if (i + 30 > data.length) return [data];
-    const nameLen = dv.getUint16(i + 26, true);
-    const extraLen = dv.getUint16(i + 28, true);
-    const compSize = dv.getUint32(i + 18, true);
-    const entryEnd = i + 30 + nameLen + extraLen + compSize;
-    // 长度溢出 → 退化（用真实字段跳过条目体，防内容中 PK\x03\x04 伪签名误导）
-    if (entryEnd > data.length) return [data];
-    count++;
-    // 达到 maxEntries 且还有后续数据（central dir/EOCD）→ 在条目边界切一块
-    if (count >= maxEntries && entryEnd < data.length) {
-      chunks.push(data.subarray(chunkStart, entryEnd));
-      chunkStart = entryEnd;
-      count = 0;
+  const offsets = parseCentralDirOffsets(data);
+  if (offsets === null || offsets.length === 0) return [data];
+
+  // 按偏移排序（central directory 中条目通常已有序，但确保正确性）
+  offsets.sort((a, b) => a - b);
+
+  // 第一个 local header offset 之前的数据（理论上为 0，但兼容 ZIP comment/前缀）
+  const chunks: Uint8Array[] = [];
+  let chunkStart = offsets[0]; // 第一个条目起始
+
+  for (let i = 0; i < offsets.length; i++) {
+    // 每 maxEntries 个条目切一块（从当前 chunkStart 到下一个条目的 local header offset）
+    if ((i + 1) % maxEntries === 0 && i + 1 < offsets.length) {
+      const chunkEnd = offsets[i + 1]; // 下一个条目的 local header offset
+      chunks.push(data.subarray(chunkStart, chunkEnd));
+      chunkStart = chunkEnd;
     }
-    i = entryEnd; // 跳到条目末尾继续扫描
   }
 
-  // 最后一块包含 central directory + EOCD（必须包含全部剩余字节）
-  if (chunkStart < data.length) chunks.push(data.subarray(chunkStart));
+  // 最后一块包含剩余条目 + central directory + EOCD（必须包含全部剩余字节）
+  if (chunkStart < data.length) {
+    chunks.push(data.subarray(chunkStart));
+  }
+
   return chunks.length > 0 ? chunks : [data];
 }
 

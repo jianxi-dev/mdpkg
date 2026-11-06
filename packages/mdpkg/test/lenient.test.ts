@@ -252,3 +252,41 @@ test('CLI export --raw 无 md 裸 zip 成功（不推断入口）', () => {
   assert.ok(!r.stderr.includes('推断入口'), `raw 模式提示不应含入口名: ${r.stderr}`);
   rmSync(tmp, { recursive: true, force: true });
 });
+
+// --- Issue #4 回归测试：validate/render 在 manifest 无 entrypoint 时行为一致 ---
+
+test('Issue#4: manifest 无 entrypoint 时 validate 与 render 一致（推断 notes.md）', async () => {
+  const { sha256 } = await import('../src/manifest.ts');
+  const notesBytes = enc('# 笔记\n');
+  const notesSha = sha256(notesBytes);
+  const bytes = bareZip({
+    'notes.md': notesBytes,
+    'manifest.json': enc(JSON.stringify({
+      format: 'mdpkg',
+      spec_version: '1.0',
+      resources: [{ path: 'notes.md', media_type: 'text/markdown', size: notesBytes.length, sha256: notesSha }],
+    })),
+  });
+  const { unpack } = await import('../src/container.ts');
+  const files = await unpack(bytes);
+
+  // render 应成功（推断 notes.md）
+  const r = render(files, {});
+  assert.ok(r.html?.includes('笔记'), 'render 应成功渲染 notes.md');
+
+  // validate 也应成功（推断 notes.md，不再硬查 document.md）
+  const { validatePackage } = await import('../src/manifest.ts');
+  const vr = validatePackage(files);
+  assert.ok(vr.ok, `validate 应成功，实际错误: ${vr.errors.join('; ')}`);
+});
+
+test('Issue#4: 子目录入口 + ../ 引用 - render 正确解析', async () => {
+  const bytes = bareZip({
+    'docs/document.md': enc('# 文档\n\n![图](../assets/a.png)\n'),
+    'assets/a.png': new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
+  });
+  const { unpack } = await import('../src/container.ts');
+  const files = await unpack(bytes);
+  const r = render(files, {});
+  assert.ok(r.html?.includes('data:image/png;base64'), '图片应内联为 data URI');
+});

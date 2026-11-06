@@ -237,7 +237,12 @@ export function validatePackage(files: Map<string, Uint8Array>): ValidationResul
     if (r.sha256 !== sha256(data)) errors.push(`[${E.E403}] sha256 不符: ${p}（完整性问题，非篡改证据）`);
   }
 
-  const entry = manifest.entrypoint ?? DEFAULT_ENTRYPOINT;
+  // 入口确定：manifest.entrypoint > 推断（与 render 一致）；无 md 时 E301
+  const entry = manifest.entrypoint ?? (() => {
+    try { return inferEntrypoint(actual); }
+    catch { return DEFAULT_ENTRYPOINT; // 推断失败，走旧逻辑报 E303
+    }
+  })();
   let externalCount = 0;
   try {
     assertMarkdownEntrypoint(entry);
