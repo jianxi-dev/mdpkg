@@ -78,7 +78,7 @@ Hashline 的职责是：读取文件后给行附加内容哈希，编辑时验�
 7. 在真实工作区覆盖前保存当前状态：
 
    ```text
-   /var/folders/.../md-bundle-recovery/worktree-before-full-restore/
+   /var/folders/.../<项目>-recovery/worktree-before-full-restore/
    ```
 
 8. 恢复上一轮 snapshot 中的完整源代码和相关新增文件。
@@ -89,9 +89,9 @@ Hashline 的职责是：读取文件后给行附加内容哈希，编辑时验�
 - Toolbar 已包含 `const ICON` 和 `onCopyBodyAsImage`。
 - Landing、TabStrip、LeftRail、OutlineMenu 已回到上一轮 mockup 驱动版本。
 - `gallery-examples.ts` 已从会话 patch 单独取回。
-- `pnpm -r typecheck` 通过。
-- `pnpm -r build` 通过。
-- `pnpm -r lint` 无错误，但仍有 3 个 warning。
+- 本仓 typecheck 门禁命令通过。
+- 本仓 build 命令通过。
+- 本仓 lint 门禁命令无错误，但仍有 3 个 warning。
 - 单测剩余失败属于旧 PNG 证据尺寸不一致，不是 TypeScript 编译失败。
 - e2e 剩余失败属于旧 share-card byline 断言不一致。
 
@@ -172,10 +172,10 @@ git status --short
 建议结构：
 
 ```text
-md-bundle/                         # 用户当前工作区
-md-bundle-recovery/                # 恢复候选
-md-bundle-ui-review/               # UI 设计任务
-md-bundle-ship/                    # 发布验证
+<项目>/                            # 用户当前工作区
+<项目>-recovery/                   # 恢复候选
+<项目>-ui-review/                  # UI 设计任务
+<项目>-ship/                       # 发布验证
 ```
 
 任务完成后，用 diff 选择性合并，不把整棵目录互相覆盖。
@@ -244,10 +244,11 @@ md-bundle-ship/                    # 发布验证
 源码层：
 
 ```bash
-pnpm -r typecheck
-pnpm -r lint
-pnpm -r test
-pnpm -r build
+# 本仓门禁命令（.change-workflow.conf 的 CMD_*）与本仓构建命令，例如：
+<typecheck 命令>
+<lint 命令>
+<test 命令>
+<build 命令>
 ```
 
 产品层：
@@ -263,7 +264,7 @@ pnpm -r build
 ### 立即执行
 
 - 将当前恢复后的精细 UI 作为一个独立原子 commit 保存。
-- 将 `apps/web/src/components/gallery-examples.ts` 纳入 Git，避免再次成为未跟踪丢失文件。
+- 将恢复出的未跟踪源文件（如应用层新增组件）纳入 Git，避免再次成为未跟踪丢失文件。
 - 为每次大规模 UI 任务在开始时创建恢复 patch。
 - 清理并修复旧 PNG evidence 尺寸断言，不要让旧产物决定当前测试状态。
 - 为 `.omo/plans/` 和 boulder 状态增加“已结束计划不得继续注入”的检查。

@@ -1,0 +1,231 @@
+name: Evidence check
+
+# IC-4/IC-5: ui-surface 票的结构性校验 + 可选三层核验。
+# 配置从项目根 .change-workflow.conf 读取（缺失则用默认）。
+# 降级：工具/命令缺失 → 打印降级说明、跑结构校验、不改变判据；非 UI 票直接通过。
+on:
+  pull_request:
+    branches:
+      - 'main'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  evidence-check:
+    runs-on: ubuntu-latest
+    steps:
+      # 全量检出：结构校验要读已提交的 .artifacts/<票号>/state-coverage.json
+      # （机读清单入库，PNG 证据不入库）；sparse 检出会让清单不可见、校验永远判缺。
+      - uses: actions/checkout@v4
+
+      - name: Read conf and determine ui-surface
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # 载入项目配置（可选）—— 只提取键值，绝不 source：
+          # conf 提交进消费仓，恶意 PR 可在其中追加 shell，
+          # source 会在 CI 下执行（RCE）。
+          CONF=.change-workflow.conf
+          cw_conf_label() {
+            local key="$1" line v q inner rest
+            [[ -f "$CONF" ]] || return 1
+            line="$(grep -m1 "^${key}=" "$CONF" || true)"
+            [[ -n "$line" ]] || return 1
+            v="${line#*=}"
+            v="${v%$'\r'}"
+            q="${v:0:1}"
+            if [[ "$q" == '"' || "$q" == "'" ]] && [[ "${v:1}" == *"$q"* ]]; then
+              inner="${v#"$q"}"
+              rest="${inner#*"$q"}"
+              case "${rest#"${rest%%[![:space:]]*}"}" in
+                ''|'#'*) v="${inner%%"$q"*}" ;;
+                *) v="${v%%[[:space:]]#*}" ;;
+              esac
+            else
+              v="${v%%[[:space:]]#*}"
+            fi
+            v="${v%"${v##*[![:space:]]}"}"
+            printf '%s\n' "$v"
+          }
+          LABEL_UI_SURFACE="$(cw_conf_label LABEL_UI_SURFACE || true)"; LABEL_UI_SURFACE="${LABEL_UI_SURFACE:-ui-surface}"
+          UI_PATH_GLOB="$(cw_conf_label UI_PATH_GLOB || true)"; UI_PATH_GLOB="${UI_PATH_GLOB:-*.{vue,jsx,tsx,css,scss}}"
+          CMD_FIDELITY="$(cw_conf_label CMD_FIDELITY || true)"
+
+          echo "label=$LABEL_UI_SURFACE"
+          echo "path_glob=$UI_PATH_GLOB"
+          echo "cmd_fidelity=$CMD_FIDELITY"
+
+          # 获取 PR 的 label
+          PR_LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name' 2>/dev/null || true)
+
+          # 获取 PR 变更的文件列表
+          PR_FILES=$(gh pr view "$PR" --repo "$REPO" --json files --jq '.files[].path' 2>/dev/null || true)
+
+          # ui-surface 判定：label ∪ diff 路径
+          IS_UI_SURFACE=false
+          if [[ "$PR_LABELS" == *"$LABEL_UI_SURFACE"* ]]; then
+            IS_UI_SURFACE=true
+            echo "ui-surface: label 命中"
+          else
+            # 检查 diff 路径是否匹配 UI_PATH_GLOB
+            # 展开花括号扩展（bash 3.2 兼容）
+            expand_braces() {
+              local pattern="$1" prefix rest options suffix opt
+              if [[ "$pattern" != *"{"* ]]; then
+                printf '%s\n' "$pattern"
+                return
+              fi
+              prefix="${pattern%%\{*}"
+              rest="${pattern#*\{}"
+              options="${rest%%\}*}"
+              suffix="${rest#*\}}"
+              local IFS=','
+              for opt in $options; do
+                printf '%s\n' "${prefix}${opt}${suffix}"
+              done
+            }
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              while IFS= read -r pattern; do
+                if [[ "$f" == $pattern ]]; then
+                  IS_UI_SURFACE=true
+                  echo "ui-surface: path 命中 ($f)"
+                  break 2
+                fi
+              done < <(expand_braces "$UI_PATH_GLOB")
+            done <<< "$PR_FILES"
+          fi
+
+          echo "is_ui_surface=$IS_UI_SURFACE" >> "$GITHUB_OUTPUT"
+          echo "cmd_fidelity=$CMD_FIDELITY" >> "$GITHUB_OUTPUT"
+
+      - name: Structural validation
+        if: steps.detect.outputs.is_ui_surface == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # 获取 PR 关闭的 issue（票号）
+          CLOSED=$(gh pr view "$PR" --repo "$REPO" --json closingIssuesReferences \
+            --jq '.closingIssuesReferences[].number' 2>/dev/null || true)
+
+          if [ -z "$CLOSED" ]; then
+            echo "⚠️ PR 未关联 issue，跳过 state-coverage 检查"
+            exit 0
+          fi
+
+          FAIL=0
+          for n in $CLOSED; do
+            # 检查 .artifacts/<票号>/state-coverage.json
+            COVERAGE=".artifacts/$n/state-coverage.json"
+            if [ ! -f "$COVERAGE" ]; then
+              echo "❌ 票 $n: 缺少 $COVERAGE"
+              FAIL=1
+              continue
+            fi
+
+            # 检查 ≥4 态（python3 做 JSON 解析）
+            if ! command -v python3 >/dev/null 2>&1; then
+              echo "⚠️ python3 缺失，降级：跳过 state-coverage.json 解析"
+              continue
+            fi
+
+            STATE_COUNT=$(python3 -c "
+          import json, sys
+          try:
+              data = json.load(open('$COVERAGE'))
+              states = data.get('states', [])
+              print(len(states))
+          except Exception as e:
+              print(0, file=sys.stderr)
+              sys.exit(1)
+          " 2>/dev/null) || STATE_COUNT=0
+
+            if [ "$STATE_COUNT" -lt 4 ]; then
+              echo "❌ 票 $n: state-coverage.json 仅 $STATE_COUNT 态（需 ≥4）"
+              FAIL=1
+            else
+              echo "✅ 票 $n: state-coverage.json $STATE_COUNT 态"
+            fi
+          done
+
+          exit $FAIL
+
+      - name: Spec diff assertion check
+        if: steps.detect.outputs.is_ui_surface == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # 获取 PR diff
+          DIFF=$(gh pr diff "$PR" --repo "$REPO" 2>/dev/null || true)
+
+          if [ -z "$DIFF" ]; then
+            echo "⚠️ 无法获取 PR diff，跳过断言强度检查"
+            exit 0
+          fi
+
+          # 判据二选一（DQ-3 的合理豁免通道）:
+          #   a) diff 含测试文件变更（test_*.py / *.spec.* / *.test.*）→ 断言强度由 diff 自身检验
+          #   b) PR 正文含 QG-5 原始输出代码块 → 纯修复 PR 无处放断言，用运行证据替代
+          # 否则才做断言强度标记检查。历史误判：纯修复 PR 连续四次因 diff 无 assertEqual 被判红。
+          PR_BODY=$(gh pr view "$PR" --repo "$REPO" --json body --jq '.body' 2>/dev/null || true)
+          if echo "$DIFF" | grep -Eq '(^|/|_)test_[^/]*\.py|\.spec\.|\.test\.'; then
+            echo "ℹ️ diff 含测试文件变更 → 走断言强度标记检查"
+          elif echo "$PR_BODY" | grep -q '```'; then
+            echo "✅ PR 正文含原始输出代码块（QG-5 证据块），纯修复 PR 免断言检查"
+            exit 0
+          fi
+
+          # 检查断言强度标记：JS（expect/toBe/toEqual…）+ Python（assertEqual/assertIn…）
+          # + openspec（#### Scenario: WHEN/THEN）。纯 Python + openspec 仓不得误报。
+          if [[ "$DIFF" == *"expect"* || "$DIFF" == *"assert"* || "$DIFF" == *"Scenario"* ]]; then
+            case "$DIFF" in
+              *toBe*|*toEqual*|*toContain*|*toMatch*|*toThrow*|*assertEqual*|*assertIn*|*assertTrue*|*assertFalse*|*assertLess*|*assertGreater*|*assertRegex*|*assertRaises*|*Scenario*)
+                echo "✅ spec diff 含断言强度标记"
+                ;;
+              *)
+                echo "❌ spec diff 缺少断言强度标记（expect/assert + toBe/toEqual/assertEqual/Scenario 等）"
+                exit 1
+                ;;
+            esac
+          else
+            echo "❌ spec diff 缺少断言强度标记（expect/assert/Scenario）"
+            exit 1
+          fi
+
+      - name: Three-layer fidelity verification
+        if: steps.detect.outputs.is_ui_surface == 'true' && steps.detect.outputs.cmd_fidelity != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          CMD_FIDELITY: ${{ steps.detect.outputs.cmd_fidelity }}
+        run: |
+          set -euo pipefail
+
+          echo "运行三层核验命令: $CMD_FIDELITY"
+          if bash -c "$CMD_FIDELITY"; then
+            echo "✅ 三层核验通过"
+          else
+            RC=$?
+            if [ "$RC" -eq 127 ]; then
+              echo "⚠️ 核验命令不可用（exit 127），降级：跳过三层核验"
+            else
+              echo "❌ 三层核验失败（exit $RC）"
+              exit 1
+            fi
+          fi

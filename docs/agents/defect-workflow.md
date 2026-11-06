@@ -87,14 +87,10 @@ gh issue close <编号> --comment "已修复，提交 commit: xxx"
 
 ## 模块标签
 
-- `landing` - 落地页模块
-- `editor` - 编辑器模块
-- `renderer` - 渲染器模块
-- `tabs` - 多页签模块
-- `fsa` - FSA 文件工作区模块
-- `save` - 保存模型模块
-- `theme` - 主题模块
-- `share` - 分享模块
+按本仓实际模块划分填写（安装时由 setup.sh 按 `.change-workflow.conf` 的 `MODULE_LABELS` 创建），例如：
+
+- `<module-a>` - 模块 A
+- `<module-b>` - 模块 B
 
 ---
 
@@ -155,9 +151,9 @@ gh issue close <编号> --comment "已修复，提交 commit: xxx"
 如果缺陷先记录在本地 `bug-registry-*.md`，批量导入命令：
 
 ```bash
-# 先确保所有标签已创建
+# 先确保所有标签已创建（模块标签按本仓实际填写，即 .change-workflow.conf 的 MODULE_LABELS）
 cd /Users/mason/ToHighs/mdpkg
-for label in "p0" "p1" "p2" "p3" "bug" "landing" "editor" "renderer" "tabs" "fsa" "save" "theme" "share"; do
+for label in "p0" "p1" "p2" "p3" "bug" <module-a> <module-b>; do
   gh label create "$label" --force
 done
 
@@ -240,7 +236,7 @@ ORDERED spans: \"1. \" | \"2. \"
 HEADING inactive class: cm-heading-marker text: \"# \"
 computed opacity: 0
 
-验证方式：本地 Playwright 真实 Chromium，16 passed (16.3s)"
+验证方式：本地真实浏览器 e2e，16 passed (16.3s)"
 ```
 
 **真实教训（editor-v2 修复期）**：修复期抓出 **4 个「自测全绿但实际无效」**的交付，**4/4 全部由独立探针抓出**：
@@ -286,11 +282,11 @@ gh issue list --label ready-for-agent --state all --json number,state \
 
 ### 修复必须同时防回归
 
-修复缺陷时**必须**同时新增或扩展一条 `*.spec.ts`（e2e）或真实路径测试，**锁住该缺陷不再复现**。仅改源码不锁行为的修复不予合并（QG-2 在缺陷线的应用）。
+修复缺陷时**必须**同时新增或扩展一条 e2e 用例或真实路径测试，**锁住该缺陷不再复现**。仅改源码不锁行为的修复不予合并（QG-2 在缺陷线的应用）。
 
 ### 从「功能不可见」类缺陷反查流程（DQ-7 的应用）
 
-当缺陷表现为「**功能根本没在操作页面中显示**」（如 `#170`：11 个功能未接入应用层）时，**不得只记为单张 bug 票**，必须反查 change 流程缺陷并写入 `docs/agents/quality-gates.md` 或 `docs/agents/retro-editor-v2-quality.md`：
+当缺陷表现为「**功能根本没在操作页面中显示**」（如 `#170`：11 个功能未接入应用层）时，**不得只记为单张 bug 票**，必须反查 change 流程缺陷并写入 `docs/agents/quality-gates.md` 或本仓质量复盘文档：
 
 - 是 QG-1 失效（AC 写在库层）？
 - 是 QG-2 失效（无 e2e 覆盖）？

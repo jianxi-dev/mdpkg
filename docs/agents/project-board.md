@@ -5,7 +5,7 @@
 
 ## 看板信息
 
-- 看板：**MD-Bundle 开发看板** → https://github.com/orgs/jianxi-dev/projects/1
+- 看板：**** → https://github.com/orgs/jianxi-dev/projects/
 - Project ID（GraphQL）：`PVT_kwDOE0POlM4BjPai`
 - Status 字段 ID：`PVTSSF_lADOE0POlM4BjPaizhiEhFM`
 - 列（Status 单选项）：`Backlog`(GRAY) / `Ready`(BLUE) / `In Progress`(YELLOW) / `Done`(GREEN)

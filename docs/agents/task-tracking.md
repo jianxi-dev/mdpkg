@@ -2,7 +2,7 @@
 
 > 适用范围：把 OpenSpec change 的 tasks 发布为 GitHub issue，打通"spec → 开发 → 完成跟踪"全链路。
 > 生效日期：2026-09-12
-> 配套：`docs/agents/quality-gates.md`（**QG-1..QG-7 质量门禁——票的 AC 与完成判据**）、`docs/agents/issue-tracker.md`（issue 操作）、`docs/agents/triage-labels.md`（状态标签）、`docs/agents/defect-workflow.md`（缺陷流程）
+> 配套：`docs/agents/quality-gates.md`（**QG-1..QG-8 质量门禁——票的 AC 与完成判据**）、`docs/agents/issue-tracker.md`（issue 操作）、`docs/agents/triage-labels.md`（状态标签）、`docs/agents/defect-workflow.md`（缺陷流程）
 
 ---
 
@@ -15,8 +15,11 @@
 ## 2. 拆票粒度
 
 - **一条 task 一票**：tasks.md 本身就是垂直切片粒度（每条约 1 commit），天然匹配。
+- **「过粗/过细」判定（声明制 + 机检）**：
+  - 下界（过细/重复）机检：每票须在票面以 `**粒度**` 字段声明其一——「用户可见交付物」或 expand–contract 序列角色（`expand` / `migrate` / `contract` / `integrate-verify`，豁免来源 to-tickets 的 wide refactor 例外条款）；票间 `What to build` 高度重叠（阈值 = `scripts/cw-tickets-check.sh` 的 `OVERLAP_THRESHOLD_PCT` 常量）视为过细/重复信号。由 `scripts/cw-tickets-check.sh`（C8）在发布前判定。
+  - 上界（过粗）维持定性：单票仍须适配单个 context window、约 1 commit；不设数值阈值，越界由声明制审计与下游捕获（G1 拒开工 / DQ-7 反查）兜底。
 - **Parent = 源 issue（to-tickets/to-spec 原语）**：每张子票统一引用其来源 spec issue（G0-PRE 由 to-spec 创建）作为 Parent，**不另设 wave/change 级 parent**；对账锚点即该 spec issue（§4）。
-- 标题前缀防刷屏：`[change=md-bundle-v2/1.3]` 格式。
+- 标题前缀防刷屏：`[change=<change名>/<task号>]` 格式。
 
 ## 3. 发布规则（走 GitHub issue）
 
@@ -26,9 +29,11 @@ to-tickets 流程在本仓库一律发布为 GitHub issue（不使用本地 `.sc
 - **Parent**：源 spec issue（to-spec 创建的规格票）引用
 - **What to build**：从用户视角描述端到端行为
 - **Acceptance criteria**：具体可验证的 AC 清单（**须满足 QG-1**，见下）
+- **验收锚点**：每条 AC 绑定的机读锚点 id（`conformance.json` 的 `A-<n>.<m>`；含具体期望值 + 来源 + 断言类型）；无锚点或不可断言 → 拒票（见 `quality-gates.md`「规格双形态与验收锚点」）
 - **Blocked by**：阻塞它的其他 ticket 引用（无则 "None — can start immediately"）
-- **接线归属**（QG-3）：本票导出的新 API 由**哪张票**负责接进 `apps/web`，及其**具体接线位置**
+- **接线归属**（QG-3）：本票导出的新 API 由**哪张票**负责接进应用层，及其**具体接线位置**
 - 标签：`ready-for-agent` + 模块标签，或加 `no-ui-impact`（豁免 QG-1/QG-2）
+- **粒度**：`用户可见交付物` 或 expand–contract 角色之一（见 §2；G0-POST 机检 C8）
 
 ### 3.1 AC 质量门禁（QG-1 / QG-3）
 
@@ -37,19 +42,19 @@ to-tickets 流程在本仓库一律发布为 GitHub issue（不使用本地 `.sc
 **QG-1｜面向用户的票，AC 必须含浏览器可观测陈述**：
 
 ```
-在 `pnpm --filter @md-bundle/web dev` 打开的页面中，
+在 `<dev 命令>` 打开的页面中，
 <具体操作> 之后，<可具体观测的结果>。
-验证：apps/web/test/<feature>.spec.ts 通过。
+验证：<E2E_DIR> 下对应 e2e 用例通过。
 ```
 
-**反向验收判据**：若一条 AC 能在**不修改 `apps/web`** 的前提下被满足 → 票切错了（QG-7）。
+**反向验收判据**：若一条 AC 能在**不修改应用层** 的前提下被满足 → 票切错了（QG-7）。
 
 **QG-3｜分派接线**：任何导出新 API 的票，必须显式指定接线票与接线位置；无引用且未指定 → 拒票。
 
 **禁入信号（出现任一即拒票）**：
 - AC 全部是库层断言（如「`getBlocks()` 返回块数组」「类型检查通过」）
 - AC 无法用「打开页面操作一次」验证
-- 导出新 API 却无 `apps/web` 引用、且未指定接线票
+- 导出新 API 却无应用层引用、且未指定接线票
 
 ## 4. 子票关联与对账（Parent = 源 spec issue）
 
@@ -62,6 +67,9 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
 **What to build**: 从用户视角描述端到端行为
 **Acceptance criteria**: 具体可验证的 AC 清单
 **Blocked by**: 阻塞它的其他子票引用（无则 "None — can start immediately"）
+**接线归属**: 新 API 由哪张票、在哪个位置接进应用层（无新增导出则显式写「无新增导出」）
+**标签**: ready-for-agent（豁免 QG-1/QG-2 时加 no-ui-impact）
+**粒度**: 用户可见交付物｜expand｜migrate｜contract｜integrate-verify
 ```
 
 - 子票标题统一 `[change=<名>/<task号>]` 前缀
@@ -92,12 +100,12 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
 | `implement` | 总编排：按 spec/tickets 实施，自动内嵌 tdd + 定期 typecheck/test，完成后调 code-review | ✅ 必用 |
 | `tdd` | 测试先行（红→绿 + 垂直切片），锁定行为契约。**测试须满足 QG-4**（驱动真实路径，禁止绕过 keymap/事件/公共 API） | ✅ implement 内嵌 |
 | `programming` | 代码规范对照（no any / 250 LOC 上限） | 可选叠加 |
-| 四件套硬门禁 | `pnpm -r typecheck/lint/test`（+e2e 涉及时），push 前强制 | ✅ `pr-automation.sh` 已内置 |
-| **e2e 硬门禁（QG-2）** | 用户可见变更**必须**新增/扩展 `apps/web/test/*.spec.ts`，否则票上须有 `no-ui-impact` | ✅ **新增门禁，push 前强制** |
+| 四件套硬门禁 | 本仓门禁命令（`.change-workflow.conf` 的 `CMD_TYPECHECK`/`CMD_LINT`/`CMD_TEST`，+e2e 涉及时），push 前强制 | ✅ `pr-automation.sh` 已内置 |
+| **e2e 硬门禁（QG-2）** | 用户可见变更**必须**新增/扩展 e2e 用例，否则票上须有 `no-ui-impact` | ✅ **新增门禁，push 前强制** |
 | **独立验证（QG-5）** | 验证者跑自己的探针并把**原始输出**粘贴到票上；未附原始证据的「已完成」不予采信 | ✅ **新增门禁** |
-| **集成 checkpoint（QG-6）** | change ≥6 票时，每 ≤4 票合并 + `pnpm -r build` + 浏览器打开一次 | ✅ **新增门禁** |
+| **集成 checkpoint（QG-6）** | change ≥6 票时，每 ≤4 票合并 + 本仓构建命令 + 浏览器打开一次 | ✅ **新增门禁** |
 
-> **QG-2 的由来（2026-09-20）**：`editor-v2` change 期间新增 e2e 为 **0**，CI 跑的是 v1 旧行为——「CI 绿」只等于「旧功能没坏」，与「新功能存在」逻辑上无关。CI 已在跑 e2e，此门禁**不增加基建成本**，只是让覆盖跟上新功能。完整根因见 `docs/agents/retro-editor-v2-quality.md`。
+> **QG-2 的由来（2026-09-20）**：源项目某 change 期间新增 e2e 为 **0**，CI 跑的是旧行为——「CI 绿」只等于「旧功能没坏」，与「新功能存在」逻辑上无关。CI 已在跑 e2e，此门禁**不增加基建成本**，只是让覆盖跟上新功能。完整根因见源项目质量复盘。
 
 ### 7.2 执行后（提交前自审）
 
@@ -115,7 +123,7 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
 
 > **时序修正（2026-09-12）**：learn + sync-gbrain 在 **推送 + 创建 PR 后立即执行，不等合并**。理由：
 > - learn/sync-gbrain 操作的是**本地工作区文件**，代码推送后本地即最新，无需等远端合并
-> - risk-medium/high 的 PR 需人工合并，若等合并才收尾，会**阻塞下一个 change 启动**
+> - PR 合并全自动，无需人工，若等合并才收尾，会**阻塞下一个 change 启动**
 > - 合并发生时只需一次增量 `gbrain sync` 对账（秒级），不构成依赖
 >
 > 正确闭环：实现 → 四件套 → code-review → commit → push + PR → **learn → sync-gbrain → 下一轮 change**；合并为异步事件，事后可选增量 sync。
@@ -134,7 +142,7 @@ to-tickets 拆出的每张子票统一引用其**来源 issue**（G0-PRE 由 to-
   → 四件套硬门禁 + e2e 硬门禁(QG-2)
   → code-review(对照 QG-4) → [QG-5 独立验证：粘贴原始输出]
   → pr-automation.sh 提交 fixes #N → push → pr create(risk 分级)
-  → CI → low:auto-merge / medium/high:review+人工
+  → CI → low/medium auto-merge（high 人工）/ +review
   → learn → sync-gbrain → 下一轮 issue
   [QG-6] change ≥6 票时每 ≤4 票插入集成 checkpoint
 发版（VERSION + CHANGELOG + tag）按发布节奏接入
@@ -208,7 +216,7 @@ gh pr list --state open --head <关联分支>            # 检查无未合并 PR
 **设计要点**：
 - 任务级闭环管"单 issue 是否交付"，change 级管"整个 change 是否收口"——两级串行，互不阻塞
 - 收尾全程自动：agent 检测到完成条件即执行，无需用户喊 `/opsx-sync` `/opsx-archive`
-- 唯一人工介入点：risk-medium/high 的 PR 合并确认（机制既有规则）
+- 人工介入点：change 收口后的剩余队列盘点与继续确认（见 change-workflow SKILL.md §G3/G4）
 
 ---
 

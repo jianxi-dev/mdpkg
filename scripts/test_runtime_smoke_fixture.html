@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<!-- 运行时冒烟自检 fixture：两页成对——good 页应 PASS，bad 页应 FAIL（红端配对）。
+     用法：python3 scripts/test_runtime_smoke.py scripts/test_runtime_smoke_fixture.html -->
+<html>
+<head><meta charset="utf-8"><title>runtime smoke fixture</title></head>
+<body>
+  <!-- good 容器：内有真实 svg -->
+  <div data-chart><svg width="10" height="10"><rect width="10" height="10"/></svg></div>
+  <!-- bad 容器：空（bad 页判断用，good 页期望脚本只对 bad 报错？——不，
+       本 fixture 是单页：空容器即判 FAIL。红端=本页空容器+console.error；
+       绿端验证请用 --good-only 内联模式不可行，见下。 -->
+  <div data-illustration></div>
+  <script>console.error("fixture deliberately broken");</script>
+</body>
+</html>

@@ -9,7 +9,7 @@
 #   ./scripts/cw-greploop.sh --pr 42 --dry-run           # 只打印将执行的循环与退出条件
 #   ./scripts/cw-greploop.sh --help                      # 本用法（退出码 0）
 #
-# 定位: G2（PR 创建后 → risk-medium/high 合并确认前）的审查闭环。
+# 定位: G2（PR 创建后 → 合并前）的审查闭环。
 #   本脚本只做「能力检测 + 协议打印」，不复制 greploop skill 的 API/GraphQL 细节，
 #   也不触发 Greptile 审查；真正的循环由 agent 依据 greploop skill 执行。
 #
@@ -310,7 +310,7 @@ print_degrade() {
   echo "      3. 人工清单: 逐条走查 PR diff，记录未解决项并在 PR 中回复"
   echo ""
   echo "==> 硬性要求: 在 PR 上显式标注「审查闭环降级为人工」，再进入合并流程。"
-  echo "==> risk-medium/high 的合并仍需人工确认；无 Greptile 不阻塞交付。"
+  echo "==> 合并已全自动（无人工确认）；无 Greptile 不阻塞交付。"
 }
 
 # --- 输出 --------------------------------------------------------------------

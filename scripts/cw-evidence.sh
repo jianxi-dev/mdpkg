@@ -8,6 +8,9 @@
 #   start [<会话目录>]  开始录制；缺省输出 .artifacts/evidence-<时间戳>（调 evidence.py start）
 #   stop [<会话路径>]   收尾录制（evidence.py stop: 烧录注释 → ffprobe 验证 → 写 report.md）
 #   headless           无 GUI 时的降级指引: 脚本化截图 + assertions.md 文件协议
+#   record-state <dir> --state <name> --screenshot <file> --assertion passed|failed|untested
+#                       创建/合并 <dir>/state-coverage.json（状态覆盖矩阵，IC-3；
+#                       python3 做 JSON 合并，缺失退 3）
 #   --skill-path <dir> 显式信任一个 skill 目录（先于九条候选根探测；--skill-path=<dir> 亦可）
 #   --help, -h         本帮助（退出码 0）
 #
@@ -32,7 +35,8 @@
 #      原样保留。退出码契约（调用方脚本依赖，勿改）:
 #        doctor 恒退 0（体检入口，缺什么都不阻断）；headless / --help 退 0；
 #        空或未知子命令退 1；start / stop 真实 exec 透传 evidence.py 退出码；
-#        start / stop 降级（只打指引、什么都没录）退 3。
+#        start / stop 降级（只打指引、什么都没录）退 3；
+#        record-state 成功退 0；参数错误退 1；python3 缺失/写入失败退 3。
 #      降级必须与成功可区分 —— 否则 `if cw-evidence.sh start` 会把「没录」判成
 #      「录了」，与 QG-5 只认原始证据直接冲突（A2 修正的真实缺陷: 降级曾退 0）。
 #      evidence.py 自身的失败仍经 exec 透传，不在此列。
@@ -378,6 +382,104 @@ EOF
   return 0
 }
 
+# ---- record-state（IC-3）-----------------------------------------------------
+# 创建/合并 <artifact-dir>/state-coverage.json（状态覆盖矩阵，evidence-capture.md
+# §3.2.1 结构: {task, states: [{state, screenshot, assertion, recorded_at, runner}]}）。
+# python3 做 JSON 合并（同名 state 覆盖，保持顺序）；python3 缺失 → return 3
+# （降级契约，同 start/stop）；参数错误 → return 1。
+cmd_record_state() {
+  local artifact_dir="" state_name="" screenshot="" assertion="" arg=""
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 不可用 —— 无法合并 state-coverage.json"
+    return 3
+  fi
+  if [[ $# -eq 0 ]]; then
+    echo "❌ record-state 需要 <artifact-dir> 参数" >&2
+    return 1
+  fi
+  artifact_dir="$1"
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --state)
+        [[ $# -lt 2 || -z "$2" ]] && { echo "❌ --state 需要非空参数" >&2; return 1; }
+        state_name="$2"; shift 2 ;;
+      --state=*)
+        state_name="${1#--state=}"
+        [[ -z "$state_name" ]] && { echo "❌ --state 需要非空参数" >&2; return 1; }
+        shift ;;
+      --screenshot)
+        [[ $# -lt 2 || -z "$2" ]] && { echo "❌ --screenshot 需要非空参数" >&2; return 1; }
+        screenshot="$2"; shift 2 ;;
+      --screenshot=*)
+        screenshot="${1#--screenshot=}"
+        [[ -z "$screenshot" ]] && { echo "❌ --screenshot 需要非空参数" >&2; return 1; }
+        shift ;;
+      --assertion)
+        [[ $# -lt 2 || -z "$2" ]] && { echo "❌ --assertion 需要非空参数" >&2; return 1; }
+        assertion="$2"; shift 2 ;;
+      --assertion=*)
+        assertion="${1#--assertion=}"
+        [[ -z "$assertion" ]] && { echo "❌ --assertion 需要非空参数" >&2; return 1; }
+        shift ;;
+      *)
+        echo "❌ record-state 未知参数: $1" >&2
+        return 1 ;;
+    esac
+  done
+  [[ -z "$state_name" ]] && { echo "❌ record-state 缺少 --state" >&2; return 1; }
+  [[ -z "$screenshot" ]] && { echo "❌ record-state 缺少 --screenshot" >&2; return 1; }
+  [[ -z "$assertion" ]] && { echo "❌ record-state 缺少 --assertion" >&2; return 1; }
+  case "$assertion" in
+    passed|failed|untested) ;;
+    *) echo "❌ --assertion 只能为 passed|failed|untested: ${assertion}" >&2; return 1 ;;
+  esac
+  if [[ ! -f "$screenshot" ]]; then
+    echo "❌ 截图文件不存在: ${screenshot}" >&2
+    return 1
+  fi
+  mkdir -p "$artifact_dir"
+  local manifest="${artifact_dir}/state-coverage.json"
+  local runner=""
+  runner="${USER:-unknown}@$(hostname -s 2>/dev/null || echo unknown)"
+  local now=""
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)"
+  local rc=0
+  python3 - "$manifest" "$state_name" "$screenshot" "$assertion" "$runner" "$now" <<'PY' || rc=$?
+import json, sys
+path, state_name, screenshot, assertion, runner, now = sys.argv[1:7]
+entry = {
+    "state": state_name,
+    "screenshot": screenshot,
+    "assertion": assertion,
+    "recorded_at": now,
+    "runner": runner,
+}
+try:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        data = {}
+except Exception:
+    data = {}
+states = data.get("states")
+if not isinstance(states, list):
+    states = []
+states = [s for s in states if not (isinstance(s, dict) and s.get("state") == state_name)]
+states.append(entry)
+data["states"] = states
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
+  if [[ $rc -ne 0 ]]; then
+    warn "state-coverage.json 写入失败（python3 退出码 ${rc}）"
+    return 3
+  fi
+  echo "✅ 已记录状态: ${state_name}（${assertion}）→ ${manifest}"
+  return 0
+}
+
 # ---- 入口 -------------------------------------------------------------------
 
 # 取头部注释的「用法」段（到 --help 行为止），剥掉注释前缀
@@ -423,9 +525,10 @@ main() {
     start)    shift; cmd_start "$@" || exit $? ;;
     stop)     shift; cmd_stop "$@" || exit $? ;;
     headless) shift; cmd_headless "$@" ;;
+    record-state) shift; cmd_record_state "$@" || exit $? ;;
     --help|-h|help) cmd_help ;;
     "")
-      echo "❌ 未指定子命令（可用: doctor / start / stop / headless）" >&2
+      echo "❌ 未指定子命令（可用: doctor / start / stop / headless / record-state）" >&2
       cmd_help >&2
       exit 1 ;;
     *)
